@@ -14,3 +14,6 @@ env/
 
 # 로컬 문서 및 기획서 파일
 *.pdf
+
+# 개인 컨텍스트 및 AI 작업 메모
+PROJECT_CONTEXT.md

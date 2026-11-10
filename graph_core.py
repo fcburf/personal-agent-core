@@ -1,14 +1,82 @@
+from typing import Literal
+from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from state import AgentState
 from config import llm_small, llm_large
 
 # ==========================================
-# [1] 에이전트 노드 (더미 함수)
+# [0] Supervisor 구조화 출력 스키마 및 프롬프트
+# ==========================================
+class SupervisorDecision(BaseModel):
+    request_type: Literal[
+        "morning_briefing", 
+        "purchase_consultation", 
+        "retrospective", 
+        "general"
+    ] = Field(
+        description="사용자 입력의 의도를 4가지 유형 중 하나로 정확히 분류"
+    )
+    reasoning: str = Field(
+        description="해당 유형으로 분류한 1줄 이유 (디버깅/모니터링용)"
+    )
+
+SUPERVISOR_PROMPT = """당신은 개인 비서 시스템의 요청 라우터(Supervisor)입니다.
+사용자의 최근 메시지를 분석하여 다음 4가지 유형 중 가장 적합한 하나로 분류하세요.
+
+[분류 기준]
+1. morning_briefing (아침 브리핑/일정):
+   - 오늘 하루 일정 확인, 스케줄 조정, 컨디션/수면/날씨에 따른 일정 최적화 관련
+   - 예: "오늘 일정 어때?", "피곤한데 스케줄 좀 조절해줘", "오늘 하루 브리핑해줘"
+2. purchase_consultation (구매 상담):
+   - 물건 구매 고민, 살까 말까 추천/보류 요청, 이번 주 지출이나 예산 관련
+   - 예: "키보드 살까 말까?", "이거 사도 괜찮을까?", "지출 점검해줘"
+3. retrospective (저녁 회고):
+   - 오늘 한 일 완료 체크, 과거 구매한 물건에 대한 만족/후회 피드백
+   - 예: "오늘 하루 회고하자", "일정 다 끝냈어", "지난주 산 거 써봤는데 별로야"
+4. general (일반 대화):
+   - 단순 인사, 비서 사용법 질문, 시스템 소개 등
+   - 예: "안녕", "너 뭐 할 줄 알아?", "심심해"
+
+[우선순위 규칙]
+- 만약 일정과 구매가 동시에 언급되면, 하루 운영을 위해 'morning_briefing'을 우선합니다.
+"""
+
+# ==========================================
+# [1] 에이전트 노드
 # ==========================================
 def supervisor_node(state: AgentState):
-    print("[Supervisor] llm_small을 활용해 요청 종류 판별 중...")
-    return {"request_type": "morning_briefing"}
+    """소형 LLM(llm_small)을 호출하여 사용자 메시지 기반으로 요청 유형을 지능적으로 판별"""
+    print("\n[Supervisor] 사용자 메시지 분석 및 요청 종류 판별 중...")
+    
+    messages = state.get("messages", [])
+    
+    # 1. 메시지가 없는 경우(예: 직접 request_type을 넘겼거나 초기 빈 호출) 기본값 방어
+    if not messages:
+        default_req = state.get("request_type", "morning_briefing")
+        print(f" -> 메시지가 없어 기본값 적용: {default_req}")
+        return {"request_type": default_req}
+    
+    # 2. 최근 대화 맥락 3개 추출 (비용 최소화 + 맥락 확보 설계)
+    recent_messages = messages[-3:]
+    
+    # 3. Structured Output LLM 생성
+    structured_router = llm_small.with_structured_output(SupervisorDecision)
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SUPERVISOR_PROMPT),
+        *recent_messages
+    ])
+    
+    try:
+        chain = prompt | structured_router
+        decision: SupervisorDecision = chain.invoke({})
+        print(f" -> 판별 결과: [{decision.request_type}] (이유: {decision.reasoning})")
+        return {"request_type": decision.request_type}
+    except Exception as e:
+        print(f" -> [경고] LLM 판별 중 오류 발생, fallback 처리: {e}")
+        return {"request_type": "general"}
 
 def context_collector_node(state: AgentState):
     print("[맥락 수집] 외부 API 병렬 호출 중...")
@@ -199,3 +267,52 @@ app = workflow.compile(
     checkpointer=memory,
     interrupt_before=["user_approval"]
 )
+
+# ==========================================
+# [4] 로컬 자가 검증용 실행 블록 (import 시에는 미실행)
+# ==========================================
+if __name__ == "__main__":
+    from langchain_core.messages import HumanMessage
+    
+    print("=" * 60)
+    print("🚀 [오케스트레이션 리드] 로컬 파이프라인 자가 검증 테스트")
+    print("=" * 60)
+    
+    # 1. 테스트 사용자 입력
+    test_query = "오늘 너무 피곤한데 하루 일정 좀 조절해줘"
+    print(f"\n[1] 사용자 입력 메시지: '{test_query}'")
+    
+    config = {"configurable": {"thread_id": "test-session-1"}}
+    initial_input = {"messages": [HumanMessage(content=test_query)]}
+    
+    # 2. 첫 번째 실행: user_approval 직전까지 진행 후 인터럽트
+    print("\n[2] 그래프 실행 시작 (user_approval 직전 대기까지)...")
+    for event in app.stream(initial_input, config):
+        for node_name in event.keys():
+            print(f" -> 노드 완료: [{node_name}]")
+    
+    # 현재 중단 상태 확인
+    snapshot = app.get_state(config)
+    print(f"\n[3] Interrupt 확인 (대기 중인 다음 노드: {snapshot.next})")
+    print(f" -> 판별된 request_type: {snapshot.values.get('request_type')}")
+    print(f" -> 커뮤니케이터 제안: {snapshot.values.get('final_response')}")
+    
+    # 3. 사용자 승인 시뮬레이션
+    print("\n[4] 사용자 승인(approved) 데이터 주입...")
+    app.update_state(
+        config, 
+        {"user_decision": {"status": "approved", "feedback": ""}}, 
+        as_node="user_approval"
+    )
+    
+    # 4. 재개 실행 (action_executor 실행 ➔ END)
+    print("\n[5] 그래프 재개 (action_executor 반영 ➔ 종료)...")
+    for event in app.stream(None, config):
+        for node_name in event.keys():
+            print(f" -> 노드 완료: [{node_name}]")
+        
+    final_snapshot = app.get_state(config)
+    print(f"\n[6] 최종 실행 결과: {final_snapshot.values.get('final_response')}")
+    print("=" * 60)
+    print("🎉 축하합니다! 전체 파이프라인 E2E 무결성 검증 완주!")
+    print("=" * 60)
