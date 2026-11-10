@@ -1,0 +1,13 @@
+# 환경 변수 및 개인 키 (절대 올리면 안 됨)
+.env
+
+# SQLite 데이터베이스 및 캐시 파일
+*.db
+long_term_memory.db
+__pycache__/
+.pytest_cache/
+
+# Virtual Environment (가상환경 폴더)
+venv/
+.venv/
+env/
