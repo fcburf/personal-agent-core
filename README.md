@@ -17,40 +17,32 @@
 
 ```mermaid
 flowchart TD
-    Start([시작]) --> Supervisor["1. Supervisor (요청 판별)"]
-    
-    %% 분기 1: 일반 대화는 맥락 수집/플래너 없이 직행
-    Supervisor -->|일반 대화 general| Communicator["5. 커뮤니케이터<br/>(결론-이유-대안)"]
+    %% 메인 흐름(실선)을 먼저 선언: Mermaid는 선언 순서·화살표 방향으로 층을 배치함
+    Start([시작]) --> Supervisor["1. Supervisor<br/>(요청 판별)"]
     Supervisor -->|브리핑 / 구매 / 회고| Context["2. 맥락 수집<br/>(API 병렬 호출)"]
-    
     Context --> Condition["3. 컨디션 분석<br/>(시간대별 에너지 점수)"]
-    
     Condition -->|아침 브리핑| Planner["4-1. 일정 플래너"]
     Condition -->|구매 상담| Advisor["4-2. 구매 어드바이저"]
     Condition -->|저녁 회고| Interview["4-3. 회상 인터뷰"]
-    
-    Planner --> Critic["Critic 검증 (대형 LLM)"]
+    Planner --> Critic["5. Critic 검증<br/>(대형 LLM)"]
     Advisor --> Critic
     Interview --> Critic
-    
-    %% 분기 2: 불합격 시 각 역할 에이전트로 재작업 (회고 재작업 포함)
-    Critic -->|반려: 플래너 재작업| Planner
-    Critic -->|반려: 구매 어드바이저 재작업| Advisor
-    Critic -->|반려: 회고 인터뷰 재작업| Interview
-    
-    %% 분기 3: 통과 및 2회 초과 처리
-    Critic -->|검증 통과| Communicator
-    Critic -->|"2회 초과 & Critical 잔존:<br/>원래 일정 유지 안내"| Communicator
-    
-    Communicator --> UserApproval{"사용자 승인 (Streamlit UI)<br/>[Interrupt Before]"}
-    
-    %% 분기 4: 사용자 승인 결과 분기 (수정 요청 시 플래너 루프)
-    UserApproval -->|승인 approved| ActionExecutor["실행 에이전트<br/>(캘린더 쓰기 / DB 저장)"]
-    UserApproval -->|"수정 요청 modify<br/>(D6 규칙: 일정 재배치)"| Planner
-    UserApproval -->|"단순 거절 rejected<br/>(대안 메시지 생성)"| Communicator
-    
+    Critic -->|검증 통과| Communicator["6. 커뮤니케이터<br/>(결론-이유-대안)"]
+    Communicator --> UserApproval{"7. 사용자 승인<br/>[Interrupt Before]"}
+    UserApproval -->|승인 approved| ActionExecutor["8. 실행 에이전트<br/>(캘린더 쓰기 / DB 저장)"]
     ActionExecutor --> End([종료])
+
+    %% 분기·루프(점선). 되돌아가는 화살표는 "A <-.- B"로 써서 배치가 꼬이지 않게 함
+    Supervisor -.->|일반 대화 general| Communicator
+    Planner <-.-|"반려: 재작업 (최대 2회)"| Critic
+    Advisor <-.-|반려| Critic
+    Interview <-.-|반려| Critic
+    Critic -.->|"2회 초과 & Critical 잔존:<br/>원래 일정 유지 안내"| Communicator
+    Planner <-.-|"수정 요청 modify<br/>(D6: 일정 재배치)"| UserApproval
+    Communicator <-.-|"단순 거절 rejected<br/>(대안 메시지 생성)"| UserApproval
 ```
+
+> **읽는 법**: 실선(→)은 정상 진행 흐름, 점선(⇢)은 분기·재작업·사용자 피드백 루프입니다.
 
 ---
 
