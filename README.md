@@ -18,25 +18,37 @@
 ```mermaid
 flowchart TD
     Start([시작]) --> Supervisor["1. Supervisor (요청 판별)"]
-    Supervisor --> Context["2. 맥락 수집 (API 병렬 호출)"]
-    Context --> Condition["3. 컨디션 분석 (에너지 점수)"]
     
-    Condition -->|아침 브리핑| Planner["4. 일정 플래너"]
-    Condition -->|구매 상담| Advisor["5. 구매 어드바이저"]
-    Condition -->|저녁 회고| Interview["6. 회상 인터뷰"]
+    %% 분기 1: 일반 대화는 맥락 수집/플래너 없이 직행
+    Supervisor -->|일반 대화 general| Communicator["5. 커뮤니케이터<br/>(결론-이유-대안)"]
+    Supervisor -->|브리핑 / 구매 / 회고| Context["2. 맥락 수집<br/>(API 병렬 호출)"]
     
-    Planner --> Critic["7. Critic 검증 (대형 LLM)"]
+    Context --> Condition["3. 컨디션 분석<br/>(시간대별 에너지 점수)"]
+    
+    Condition -->|아침 브리핑| Planner["4-1. 일정 플래너"]
+    Condition -->|구매 상담| Advisor["4-2. 구매 어드바이저"]
+    Condition -->|저녁 회고| Interview["4-3. 회상 인터뷰"]
+    
+    Planner --> Critic["Critic 검증 (대형 LLM)"]
     Advisor --> Critic
     Interview --> Critic
     
-    Critic -->|검증 불합격 & 재작업 < 2회| Planner
-    Critic -->|검증 불합격 & 재작업 < 2회| Advisor
-    Critic -->|검증 통과| Communicator["8. 커뮤니케이터 (결론-이유-대안)"]
+    %% 분기 2: 불합격 시 각 역할 에이전트로 재작업 (회고 재작업 포함)
+    Critic -->|반려: 플래너 재작업| Planner
+    Critic -->|반려: 구매 어드바이저 재작업| Advisor
+    Critic -->|반려: 회고 인터뷰 재작업| Interview
     
-    Communicator --> UserApproval{"사용자 승인 (Streamlit UI)\n[Interrupt Before]"}
+    %% 분기 3: 통과 및 2회 초과 처리
+    Critic -->|검증 통과| Communicator
+    Critic -->|"2회 초과 & Critical 잔존:<br/>원래 일정 유지 안내"| Communicator
     
-    UserApproval -->|거절 / 수정 요청| Communicator
-    UserApproval -->|승인| ActionExecutor["9. 실행 에이전트\n(캘린더 쓰기 / DB 저장)"]
+    Communicator --> UserApproval{"사용자 승인 (Streamlit UI)<br/>[Interrupt Before]"}
+    
+    %% 분기 4: 사용자 승인 결과 분기 (수정 요청 시 플래너 루프)
+    UserApproval -->|승인 approved| ActionExecutor["실행 에이전트<br/>(캘린더 쓰기 / DB 저장)"]
+    UserApproval -->|"수정 요청 modify<br/>(D6 규칙: 일정 재배치)"| Planner
+    UserApproval -->|"단순 거절 rejected<br/>(대안 메시지 생성)"| Communicator
+    
     ActionExecutor --> End([종료])
 ```
 
@@ -71,7 +83,6 @@ personal-agent-core/
    * AI의 독단적인 일정 변경을 방지하기 위해 `interrupt_before` 기반 승인 단계를 거치며, 사용자가 거절/수정 요청 시 다시 대안을 탐색하는 루프를 지원합니다.
 4. **자가 교정(Self-Correction) 메커니즘**:
    * Critic 노드가 마감 기한 누락, 과잉 개인화 등을 감지하면 최대 2회까지 담당 에이전트로 되돌려 스스로 보완하도록 설계되었습니다.
-```
 
 ---
 
@@ -181,7 +192,7 @@ app.update_state(
     {"user_decision": {"status": "modify", "feedback": "3시 일정은 내일로 미뤄줘"}}, 
     as_node="user_approval"
 )
-app.invoke(None, config)  # 커뮤니케이터로 복귀하여 대안 제시
+app.invoke(None, config)  # modify → 플래너가 일정을 다시 짠 뒤 Critic 재검증 / rejected → 커뮤니케이터가 대안 제시
 ```
 
 ---

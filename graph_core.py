@@ -160,6 +160,13 @@ def action_executor_node(state: AgentState):
 # ==========================================
 # [2] 조건부 라우팅 함수 (Edge)
 # ==========================================
+def route_after_supervisor(state: AgentState) -> str:
+    """Supervisor가 판별한 request_type에 따라 일반 대화는 바로 커뮤니케이터로, 업무는 맥락 수집으로 분기"""
+    req_type = state.get("request_type")
+    if req_type == "general":
+        return "communicator"
+    return "context_collector"
+
 def route_after_context(state: AgentState) -> str:
     """Supervisor가 판별한 request_type에 따라 담당 에이전트로 이동"""
     req_type = state.get("request_type")
@@ -172,21 +179,27 @@ def route_after_context(state: AgentState) -> str:
     return "communicator"
 
 def route_after_critic(state: AgentState) -> str:
-    """Critic의 판단(is_valid)에 따라 통과면 소통으로, 실패면 지정된 에이전트 또는 원래 에이전트로 재작업 (최대 2회)"""
+    """Critic의 판단(is_valid)에 따라 통과면 소통으로, 실패면 지정된 에이전트 또는 원래 에이전트로 재작업 (최대 2회).
+    재작업 2회 초과 시 critical 심각도가 남아있으면 '원래 일정 유지'를 안내하도록 처리."""
     is_valid = state.get("is_valid", False)
     rework_count = state.get("rework_count", 0)
     critic_result = state.get("critic_result") or {}
     
-    # 구조화된 출력의 boolean 플래그로 깔끔하게 검사
-    if is_valid or rework_count >= 2:
+    # 2회 초과 시: critical 에러가 남아있는지 확인 후 커뮤니케이터로 이동
+    if rework_count >= 2:
+        if critic_result.get("severity") == "critical":
+            print(" -> [Critic] 재작업 2회 초과 및 Critical 에러 잔존: '원래 일정 유지' 안내로 전환")
+        return "communicator"
+        
+    if is_valid:
         return "communicator"
     
-    # critic_result에 target_agent가 지정되어 있다면 우선 분기
+    # 실패 시 target_agent(planner, purchase_advisor, recall_interview)로 분기 (회고 재작업 포함)
     target_agent = critic_result.get("target_agent")
     if target_agent in ["planner", "purchase_advisor", "recall_interview"]:
         return target_agent
     
-    # 실패 시 원래 호출했던 에이전트로 반환
+    # target_agent가 명시되지 않은 경우 request_type 기반 fallback
     req_type = state.get("request_type")
     if req_type == "morning_briefing":
         return "planner"
@@ -198,14 +211,26 @@ def route_after_critic(state: AgentState) -> str:
     return "communicator"
 
 def route_after_approval(state: AgentState) -> str:
-    """사용자 결정(user_decision)에 따라 승인이면 실행 노드로, 거절/수정이면 대안 제시 루프로 분기"""
+    """사용자 결정(user_decision)에 따라 분기:
+    - 승인(approved): action_executor 노드로 이동하여 캘린더/DB에 반영
+    - 수정 요청(modify): 사용자의 수정 피드백을 반영하기 위해 플래너(또는 해당 에이전트)로 복귀
+    - 거절(rejected): 커뮤니케이터로 복귀하여 대안 텍스트 제시
+    """
     decision = state.get("user_decision") or {}
     status = decision.get("status", "approved")
+    req_type = state.get("request_type")
     
     if status == "approved":
         return "action_executor"
-    elif status in ["rejected", "modify"]:
-        # 거절 또는 대안 요청 시 커뮤니케이터로 복귀하여 대안 제시 (기획서 원칙)
+    elif status == "modify":
+        # 수정 요청 시 플래너가 다시 계획을 짤 수 있도록 복귀 (D6 규칙 준수)
+        if req_type == "morning_briefing":
+            return "planner"
+        elif req_type == "purchase_consultation":
+            return "purchase_advisor"
+        return "planner"
+    elif status == "rejected":
+        # 단순 거절 시 커뮤니케이터로 대안 루프
         return "communicator"
     
     return "action_executor"
@@ -227,9 +252,13 @@ workflow.add_node("communicator", communicator_node)
 workflow.add_node("user_approval", user_approval_node)
 workflow.add_node("action_executor", action_executor_node)
 
-# 정적 엣지 연결
+# 엔트리 포인트 및 Supervisor 조건부 라우팅 (일반 대화 general은 context_collector 생략)
 workflow.set_entry_point("supervisor")
-workflow.add_edge("supervisor", "context_collector")
+workflow.add_conditional_edges("supervisor", route_after_supervisor, {
+    "context_collector": "context_collector",
+    "communicator": "communicator"
+})
+
 workflow.add_edge("context_collector", "condition_analyzer")
 
 # 조건부 라우팅
@@ -253,9 +282,11 @@ workflow.add_conditional_edges("critic", route_after_critic, {
 
 workflow.add_edge("communicator", "user_approval")
 
-# 사용자 승인 후 라우팅: 승인이면 실행 노드로, 거절/수정이면 커뮤니케이터로 대안 루프
+# 사용자 승인 후 라우팅: 승인이면 실행 노드로, 수정 요청이면 플래너로 재작성, 거절이면 커뮤니케이터 대안 루프
 workflow.add_conditional_edges("user_approval", route_after_approval, {
     "action_executor": "action_executor",
+    "planner": "planner",
+    "purchase_advisor": "purchase_advisor",
     "communicator": "communicator"
 })
 
