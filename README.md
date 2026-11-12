@@ -37,8 +37,10 @@ flowchart TD
     Planner <-.-|"반려: 재작업 (최대 2회)"| Critic
     Advisor <-.-|반려| Critic
     Interview <-.-|반려| Critic
-    Critic -.->|"2회 초과 & Critical 잔존:<br/>원래 일정 유지 안내"| Communicator
+    Critic -.->|"재작업 2회 후 high 잔존: 경고 표시<br/>critical 잔존: 원래 일정 유지 안내"| Communicator
     Planner <-.-|"수정 요청 modify<br/>(D6: 일정 재배치)"| UserApproval
+    Interview <-.-|"수정 요청 modify<br/>(회고)"| UserApproval
+    Communicator -.->|"일반 대화 / 원래 일정 유지<br/>(승인할 제안 없음)"| End
     Communicator <-.-|"단순 거절 rejected<br/>(대안 메시지 생성)"| UserApproval
 ```
 
@@ -94,9 +96,11 @@ personal-agent-core/
 | `is_valid` | `bool` | Critic | 검증 통과 여부 (`True` / `False`) |
 | `critic_feedback` | `str` | Critic | 검증 피드백 요약 문장 |
 | `critic_result` | `CriticResult` (`Dict`) | Critic | **구조화된 검증 상세 결과** (하단 참조) |
-| `rework_count` | `int` | Critic | 재작업 루프 카운터 (최대 2회 제한) |
+| `rework_count` | `int` | Critic | 누적 반려 횟수. 역할 에이전트 재작업 최대 2회(=Critic 검사 최대 3회). modify 시 0으로 초기화 |
+| `critic_verdict` | `str` | Critic | 최종 판정: `pass` / `warn`(2회 후 high 잔존) / `keep_original`(2회 후 critical 잔존) / `rework`(내부용) |
 | `final_response` | `str` | 커뮤니케이터 | 사용자에게 전달할 최종 안내 메시지 (결론 ➔ 이유 ➔ 대안) |
 | `user_decision` | `UserDecision` (`Dict`) | 화면 / 승인 | **사용자의 승인 및 수정 피드백** (하단 참조) |
+| `rejected_history` | `Annotated[List[Dict], operator.add]` | 승인 | 거절·수정 이력 누적 (D6 검사용). 항목: `status`, `changes`, `feedback`, `decided_at` |
 
 ---
 
@@ -171,20 +175,17 @@ state_output = app.invoke({"request_type": "morning_briefing"}, config)
 # state_output["final_response"], state_output["critic_result"] 등 표시
 
 # 3. 사용자가 [승인] 버튼 클릭 시 상태 업데이트 후 재개
-app.update_state(
-    config, 
-    {"user_decision": {"status": "approved", "feedback": ""}}, 
-    as_node="user_approval"
-)
+#    ⚠️ as_node를 넣지 마세요: 넣으면 user_approval 노드가 건너뛰어져 거절/수정 이력(rejected_history)이 기록되지 않습니다.
+app.update_state(config, {"user_decision": {"status": "approved", "feedback": ""}})
 final_result = app.invoke(None, config)  # action_executor가 실행되어 캘린더 반영 후 종료
 
 # 4. 사용자가 [수정/거절] 요청 시:
-app.update_state(
-    config, 
-    {"user_decision": {"status": "modify", "feedback": "3시 일정은 내일로 미뤄줘"}}, 
-    as_node="user_approval"
-)
-app.invoke(None, config)  # modify → 플래너가 일정을 다시 짠 뒤 Critic 재검증 / rejected → 커뮤니케이터가 대안 제시
+app.update_state(config, {"user_decision": {"status": "modify", "feedback": "3시 일정은 내일로 미뤄줘"}})
+app.invoke(None, config)  # modify → 담당 에이전트가 다시 계획 → Critic 재검증 / rejected → 커뮤니케이터가 대안 제시
+
+# 5. 승인 단계 없이 끝나는 경우 (app.get_state(config).next == ())
+#    - 일반 대화(general), critic_verdict == "keep_original"(원래 일정 유지)
+#    → final_response만 표시하고 승인 버튼은 숨김
 ```
 
 ---

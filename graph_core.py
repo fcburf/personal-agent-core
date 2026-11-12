@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
@@ -99,48 +100,102 @@ def recall_interview_node(state: AgentState):
     print("[회상 인터뷰] 과거 구매 만족도 인터뷰 진행 중...")
     return {"draft_proposal": {"interview_item": "블루투스 이어폰", "questions": ["음질은 어땠나요?"]}}
 
+MAX_REWORK = 2  # 플래너 등 역할 에이전트가 다시 도는 최대 횟수 (Critic 검사는 최대 3번)
+SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+def decide_critic_verdict(severity: str, rework_count: int) -> tuple[bool, str]:
+    """Critic 조건표의 '심각도별 처리' 규칙을 코드로 고정한 함수 (LLM이 아니라 코드가 판정).
+
+    - rework_count: 이번 검사까지 포함한 누적 반려 횟수
+    - 반환: (is_valid, critic_verdict)
+        high 미만 → (True, "pass")
+        high 이상 & 재작업 기회 남음 → (False, "rework")
+        재작업 기회 소진 & critical → (False, "keep_original")
+        재작업 기회 소진 & high     → (False, "warn")
+    """
+    if SEVERITY_RANK.get(severity, 0) < SEVERITY_RANK["high"]:
+        return True, "pass"
+    if rework_count <= MAX_REWORK:
+        return False, "rework"
+    return False, ("keep_original" if severity == "critical" else "warn")
+
 def critic_node(state: AgentState):
     print("[Critic 검증] llm_large로 과잉 개인화 및 논리 검사 중...")
-    current_count = state.get("rework_count", 0)
-    
-    # 실무 패턴: 대형 LLM의 구조화된 출력(Structured Output)을 모사
-    # 첫 번째는 반려(False), 두 번째에 통과(True)하도록 더미 로직 구성
-    if current_count < 1:
+    prev_count = state.get("rework_count", 0)
+
+    # TODO(원형): 대형 LLM 구조화 출력으로 교체. 입력: draft_proposal, context_data,
+    #             condition_score, rejected_history(D6 검사용). 출력: violated_rules, severity, feedback, target_agent
+    # 더미 로직: 첫 검사는 high로 반려, 이후 통과
+    if prev_count < 1:
         critic_res = {
-            "is_valid": False,
-            "violated_rules": ["마감_기한_누락"],
+            "violated_rules": ["A1_마감_누락"],
             "severity": "high",
             "feedback": "일정 마감 기한이 누락되었습니다. 다시 배치하세요.",
-            "target_agent": "planner"
+            "target_agent": "planner",
         }
-        return {
-            "is_valid": False,
-            "critic_feedback": critic_res["feedback"],
-            "critic_result": critic_res,
-            "rework_count": current_count + 1
+    else:
+        critic_res = {
+            "violated_rules": [],
+            "severity": "low",
+            "feedback": "논리와 근거가 타당합니다.",
+            "target_agent": None,
         }
-    
-    critic_res = {
-        "is_valid": True,
-        "violated_rules": [],
-        "severity": "low",
-        "feedback": "논리와 근거가 타당합니다.",
-        "target_agent": None
-    }
+
+    # 반려일 때만 카운트 증가 → 판정은 decide_critic_verdict가 일괄 결정
+    rejected = SEVERITY_RANK.get(critic_res["severity"], 0) >= SEVERITY_RANK["high"]
+    new_count = prev_count + 1 if rejected else prev_count
+    is_valid, verdict = decide_critic_verdict(critic_res["severity"], new_count)
+    critic_res["is_valid"] = is_valid
+    print(f" -> 판정: {verdict} (severity={critic_res['severity']}, 누적 반려={new_count})")
+
     return {
-        "is_valid": True,
+        "is_valid": is_valid,
         "critic_feedback": critic_res["feedback"],
         "critic_result": critic_res,
-        "rework_count": current_count
+        "critic_verdict": verdict,
+        "rework_count": new_count,
     }
 
 def communicator_node(state: AgentState):
-    print("[커뮤니케이터] 결론 -> 이유 -> 대안 순서로 메시지 포매팅 중...")
-    return {"final_response": "제안: 회의를 오전으로 옮기세요. (이유: 오후 집중력 저하 예상)"}
+    """TODO(원형): 안내 문구 작성. critic_verdict 값에 따라 문구 분기.
+    - "pass"          : 결론 → 이유 → 대안 (critic_result.violated_rules의 medium·low 경고 표시)
+    - "warn"          : 위와 같되 경고 표시를 붙여 전달
+    - "keep_original" : 제안을 내보내지 않고 "원래 일정 유지" + 충돌 이유 안내 (승인 단계 없이 종료)
+    - request_type == "general" : 일반 대화 응답 (승인 단계 없이 종료)
+    - user_decision.status == "rejected" : rejected_history[-1]을 참고해 대안 제시
+    """
+    verdict = state.get("critic_verdict")
+    print(f"[커뮤니케이터] 결론 -> 이유 -> 대안 순서로 메시지 포매팅 중... (verdict={verdict})")
+    if state.get("request_type") == "general":
+        return {"final_response": "안녕하세요! 일정 브리핑, 구매 상담, 저녁 회고를 도와드릴 수 있어요."}
+    if verdict == "keep_original":
+        return {"final_response": "검토 결과 마감·고정 일정을 지킬 수 있는 안전한 재배치안을 찾지 못해 원래 일정을 유지합니다."}
+    prefix = "⚠️ [확인 필요] " if verdict == "warn" else ""
+    return {"final_response": prefix + "제안: 회의를 오전으로 옮기세요. (이유: 오후 집중력 저하 예상)"}
 
 def user_approval_node(state: AgentState):
-    print("[사용자 승인] Streamlit UI에서 승인 대기 중 (Interrupt)...")
-    return {}
+    """interrupt_before로 멈췄다가, UI가 user_decision을 넣고 재개하면 실행되는 노드.
+    거절·수정이면 rejected_history에 쌓고(D6), 새 계획을 위해 Critic 카운터를 초기화한다."""
+    decision = state.get("user_decision") or {}
+    status = decision.get("status", "approved")
+    print(f"[사용자 승인] 사용자 결정 수신: {status}")
+
+    if status not in ("rejected", "modify"):
+        return {}
+
+    proposal = state.get("draft_proposal") or {}
+    entry = {
+        "status": status,
+        "changes": proposal.get("changes", proposal),  # 채린 님 draft_proposal 형식 확정 전까지 전체 저장
+        "feedback": decision.get("feedback", ""),
+        "decided_at": decision.get("decided_at") or datetime.now().isoformat(timespec="seconds"),
+    }
+    update = {"rejected_history": [entry]}  # operator.add 리듀서 → 기존 이력 뒤에 추가
+    if status == "modify":
+        # 사용자 요청으로 새 계획을 짜는 것이므로 재작업 기회를 다시 2회 부여
+        # (critic_verdict는 Critic이 재검사하며 덮어쓰므로 초기화하지 않음)
+        update.update({"rework_count": 0, "is_valid": False})
+    return update
 
 def action_executor_node(state: AgentState):
     """승인된 제안을 실제 외부 시스템(Google Calendar API, SQLite DB 등)에 반영하는 노드"""
@@ -178,37 +233,30 @@ def route_after_context(state: AgentState) -> str:
         return "recall_interview"
     return "communicator"
 
+AGENT_BY_REQUEST = {
+    "morning_briefing": "planner",
+    "purchase_consultation": "purchase_advisor",
+    "retrospective": "recall_interview",
+}
+
 def route_after_critic(state: AgentState) -> str:
-    """Critic의 판단(is_valid)에 따라 통과면 소통으로, 실패면 지정된 에이전트 또는 원래 에이전트로 재작업 (최대 2회).
-    재작업 2회 초과 시 critical 심각도가 남아있으면 '원래 일정 유지'를 안내하도록 처리."""
-    is_valid = state.get("is_valid", False)
-    rework_count = state.get("rework_count", 0)
-    critic_result = state.get("critic_result") or {}
-    
-    # 2회 초과 시: critical 에러가 남아있는지 확인 후 커뮤니케이터로 이동
-    if rework_count >= 2:
-        if critic_result.get("severity") == "critical":
-            print(" -> [Critic] 재작업 2회 초과 및 Critical 에러 잔존: '원래 일정 유지' 안내로 전환")
+    """판정은 critic_node가 critic_verdict로 이미 내렸으므로, 라우터는 그 값만 보고 길을 고른다.
+    - "rework" → target_agent(없으면 request_type 기준 담당 에이전트)로 재작업
+    - 그 외("pass" / "warn" / "keep_original") → 커뮤니케이터 (문구는 커뮤니케이터가 verdict로 분기)
+    """
+    if state.get("critic_verdict") != "rework":
         return "communicator"
-        
-    if is_valid:
-        return "communicator"
-    
-    # 실패 시 target_agent(planner, purchase_advisor, recall_interview)로 분기 (회고 재작업 포함)
-    target_agent = critic_result.get("target_agent")
-    if target_agent in ["planner", "purchase_advisor", "recall_interview"]:
+
+    target_agent = (state.get("critic_result") or {}).get("target_agent")
+    if target_agent in AGENT_BY_REQUEST.values():
         return target_agent
-    
-    # target_agent가 명시되지 않은 경우 request_type 기반 fallback
-    req_type = state.get("request_type")
-    if req_type == "morning_briefing":
-        return "planner"
-    elif req_type == "purchase_consultation":
-        return "purchase_advisor"
-    elif req_type == "retrospective":
-        return "recall_interview"
-    
-    return "communicator"
+    return AGENT_BY_REQUEST.get(state.get("request_type"), "communicator")
+
+def route_after_communicator(state: AgentState) -> str:
+    """승인할 제안이 없는 경우(일반 대화, 원래 일정 유지)는 승인 단계 없이 종료"""
+    if state.get("request_type") == "general" or state.get("critic_verdict") == "keep_original":
+        return "end"
+    return "user_approval"
 
 def route_after_approval(state: AgentState) -> str:
     """사용자 결정(user_decision)에 따라 분기:
@@ -218,17 +266,12 @@ def route_after_approval(state: AgentState) -> str:
     """
     decision = state.get("user_decision") or {}
     status = decision.get("status", "approved")
-    req_type = state.get("request_type")
-    
+
     if status == "approved":
         return "action_executor"
     elif status == "modify":
-        # 수정 요청 시 플래너가 다시 계획을 짤 수 있도록 복귀 (D6 규칙 준수)
-        if req_type == "morning_briefing":
-            return "planner"
-        elif req_type == "purchase_consultation":
-            return "purchase_advisor"
-        return "planner"
+        # 수정 요청 시 담당 에이전트가 다시 계획을 짜고 Critic 재검증 (D6 규칙 준수)
+        return AGENT_BY_REQUEST.get(state.get("request_type"), "planner")
     elif status == "rejected":
         # 단순 거절 시 커뮤니케이터로 대안 루프
         return "communicator"
@@ -280,13 +323,18 @@ workflow.add_conditional_edges("critic", route_after_critic, {
     "recall_interview": "recall_interview"
 })
 
-workflow.add_edge("communicator", "user_approval")
+# 커뮤니케이터 후: 승인할 제안이 있을 때만 승인 단계로
+workflow.add_conditional_edges("communicator", route_after_communicator, {
+    "user_approval": "user_approval",
+    "end": END
+})
 
-# 사용자 승인 후 라우팅: 승인이면 실행 노드로, 수정 요청이면 플래너로 재작성, 거절이면 커뮤니케이터 대안 루프
+# 사용자 승인 후 라우팅: 승인이면 실행 노드로, 수정 요청이면 담당 에이전트로 재작성, 거절이면 커뮤니케이터 대안 루프
 workflow.add_conditional_edges("user_approval", route_after_approval, {
     "action_executor": "action_executor",
     "planner": "planner",
     "purchase_advisor": "purchase_advisor",
+    "recall_interview": "recall_interview",
     "communicator": "communicator"
 })
 
@@ -330,10 +378,10 @@ if __name__ == "__main__":
     
     # 3. 사용자 승인 시뮬레이션
     print("\n[4] 사용자 승인(approved) 데이터 주입...")
+    # as_node를 주지 않아야 재개 시 user_approval 노드가 실제로 실행되어 거절/수정 이력이 기록됨
     app.update_state(
-        config, 
-        {"user_decision": {"status": "approved", "feedback": ""}}, 
-        as_node="user_approval"
+        config,
+        {"user_decision": {"status": "approved", "feedback": ""}}
     )
     
     # 4. 재개 실행 (action_executor 실행 ➔ END)

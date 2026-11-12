@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated, List, Dict, Any, Optional
+from typing import TypedDict, Annotated, List, Dict, Any, Optional, Literal
 import operator
 from langchain_core.messages import BaseMessage
 
@@ -8,6 +8,12 @@ class CriticResult(TypedDict, total=False):
     severity: str                  # 심각도 ("low" | "medium" | "high" | "critical")
     feedback: str                  # 구체적 개선 가이드 문장
     target_agent: Optional[str]    # 재작업을 지시할 에이전트 ("planner" | "purchase_advisor" | "recall_interview")
+
+class RejectedEntry(TypedDict, total=False):
+    status: str                    # 'rejected' | 'modify'
+    changes: Any                   # 거절·수정 대상이 된 변경 내용 (draft_proposal의 changes)
+    feedback: Optional[str]        # 사용자 피드백
+    decided_at: Optional[str]      # 결정 시각 (ISO 8601)
 
 class UserDecision(TypedDict, total=False):
     status: str                    # 승인 상태 ('approved' | 'rejected' | 'modify')
@@ -33,11 +39,22 @@ class AgentState(TypedDict):
     # 5. Critic(검증) 에이전트 피드백 및 재작업 루프 관리
     is_valid: bool
     critic_feedback: str
-    critic_result: Dict[str, Any]  # 구조화된 Critic 결과 (위반 규칙, 심각도, 대상 에이전트 등)
+    critic_result: CriticResult  # 구조화된 Critic 결과 (위반 규칙, 심각도, 대상 에이전트 등)
     rework_count: int
     
     # 6. 커뮤니케이터가 최종적으로 다듬은 출력 메시지
     final_response: str
     
     # 7. 사용자 승인 결과 (Streamlit 화면에서 사용자의 승인/거절/수정 의견 기록)
-    user_decision: Dict[str, Any]
+    user_decision: UserDecision
+
+    # 8. Critic 최종 판정 (커뮤니케이터가 안내 문구를 고르는 기준)
+    #    "rework"         : 반려, 재작업 기회 남음 (그래프 내부용, 커뮤니케이터까지 가지 않음)
+    #    "pass"           : 통과 (medium·low 경고는 critic_result.violated_rules에 남아 있을 수 있음)
+    #    "warn"           : 재작업 2회 후에도 high 잔존 → 경고 표시를 붙여 전달
+    #    "keep_original"  : 재작업 2회 후에도 critical 잔존 → 제안을 내보내지 않고 "원래 일정 유지" 안내
+    critic_verdict: Literal["rework", "pass", "warn", "keep_original"]
+
+    # 9. 사용자가 거절·수정한 제안 이력 (D6: 거절한 제안 재제출 금지 검사용, 누적)
+    #    각 항목: {"status": "rejected"|"modify", "changes": ..., "feedback": str, "decided_at": str}
+    rejected_history: Annotated[List[RejectedEntry], operator.add]
