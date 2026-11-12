@@ -4,7 +4,7 @@ from langchain_core.messages import BaseMessage
 
 class CriticResult(TypedDict, total=False):
     is_valid: bool                 # 통과 여부 (True/False)
-    violated_rules: List[str]      # 위반 규칙 목록 (예: ["마감_기한_누락", "과잉_개인화", "근거_부족"])
+    violated_rules: List[str]      # 위반 규칙 목록 (Critic 조건표 ID 형식, 예: ["A1_마감_누락", "C2_무관한_기억_사용"])
     severity: str                  # 심각도 ("low" | "medium" | "high" | "critical")
     feedback: str                  # 구체적 개선 가이드 문장
     target_agent: Optional[str]    # 재작업을 지시할 에이전트 ("planner" | "purchase_advisor" | "recall_interview")

@@ -89,18 +89,18 @@ personal-agent-core/
 | 필드명 | 타입 | 담당 에이전트 | 설명 및 예시 |
 |---|---|---|---|
 | `messages` | `Annotated[List[BaseMessage], operator.add]` | 공통 | 대화 히스토리 누적 관리 |
-| `request_type` | `str` | Supervisor | 요청 유형 (`morning_briefing`, `purchase_consultation`, `retrospective`) |
+| `request_type` | `str` | Supervisor | 요청 유형 (`morning_briefing`, `purchase_consultation`, `retrospective`, `general`) |
 | `context_data` | `Dict[str, Any]` | 맥락 수집 | 외부 API 데이터 (`calendar`, `tasks`, `weather`, `sleep_score`, `spending`) |
 | `condition_score` | `Dict[str, Any]` | 컨디션 분석 | 시간대별 에너지 점수 (`{"morning": 80, "afternoon": 40}`) |
 | `draft_proposal` | `Dict[str, Any]` | 플래너 / 어드바이저 | 에이전트가 제안하는 작업/구매 초안 (`action`, `target`, `reason`) |
 | `is_valid` | `bool` | Critic | 검증 통과 여부 (`True` / `False`) |
 | `critic_feedback` | `str` | Critic | 검증 피드백 요약 문장 |
-| `critic_result` | `CriticResult` (`Dict`) | Critic | **구조화된 검증 상세 결과** (하단 참조) |
+| `critic_result` | `CriticResult` | Critic | **구조화된 검증 상세 결과** (하단 ① 참조) |
 | `rework_count` | `int` | Critic | 누적 반려 횟수. 역할 에이전트 재작업 최대 2회(=Critic 검사 최대 3회). modify 시 0으로 초기화 |
-| `critic_verdict` | `str` | Critic | 최종 판정: `pass` / `warn`(2회 후 high 잔존) / `keep_original`(2회 후 critical 잔존) / `rework`(내부용) |
+| `critic_verdict` | `Literal["rework", "pass", "warn", "keep_original"]` | Critic | **커뮤니케이터가 안내 문구를 고르는 기준.** `pass` 통과 / `warn` 2회 후 high 잔존(경고 표시) / `keep_original` 2회 후 critical 잔존(원래 일정 유지, 승인 없이 종료) / `rework` 그래프 내부용 |
 | `final_response` | `str` | 커뮤니케이터 | 사용자에게 전달할 최종 안내 메시지 (결론 ➔ 이유 ➔ 대안) |
-| `user_decision` | `UserDecision` (`Dict`) | 화면 / 승인 | **사용자의 승인 및 수정 피드백** (하단 참조) |
-| `rejected_history` | `Annotated[List[Dict], operator.add]` | 승인 | 거절·수정 이력 누적 (D6 검사용). 항목: `status`, `changes`, `feedback`, `decided_at` |
+| `user_decision` | `UserDecision` | 화면 / 승인 | **사용자의 승인 및 수정 피드백** (하단 ② 참조) |
+| `rejected_history` | `Annotated[List[RejectedEntry], operator.add]` | 승인 | 거절·수정 이력 누적, 덮어쓰지 않고 뒤에 추가됨 (D6 검사용, 하단 ③ 참조) |
 
 ---
 
@@ -110,7 +110,7 @@ personal-agent-core/
 ```python
 class CriticResult(TypedDict, total=False):
     is_valid: bool                 # 통과 여부 (True/False)
-    violated_rules: List[str]      # 위반 규칙 목록 (예: ["마감_기한_누락", "과잉_개인화", "근거_부족"])
+    violated_rules: List[str]      # 위반 규칙 목록 (Critic 조건표 ID 형식, 예: ["A1_마감_누락", "C2_무관한_기억_사용"])
     severity: str                  # 심각도 ("low" | "medium" | "high" | "critical")
     feedback: str                  # 구체적 개선 가이드 문장
     target_agent: Optional[str]    # 재작업 대상 에이전트 ("planner" | "purchase_advisor" | "recall_interview")
@@ -123,6 +123,16 @@ class UserDecision(TypedDict, total=False):
     feedback: Optional[str]        # 거절/대안 요청 시 사용자 추가 코멘트 (예: "3시는 회의가 있어 안 돼")
     decided_at: Optional[str]      # 사용자 결정 일시 (ISO 8601 타임스탬프)
 ```
+
+#### ③ `RejectedEntry` (거절·수정 이력 한 건)
+```python
+class RejectedEntry(TypedDict, total=False):
+    status: str                    # 'rejected' | 'modify' (승인 approved는 기록하지 않음)
+    changes: Any                   # 거절·수정 대상이 된 변경 내용 (draft_proposal 형식 확정 전까지는 제안 전체)
+    feedback: Optional[str]        # 사용자 피드백
+    decided_at: Optional[str]      # 결정 시각 (ISO 8601)
+```
+> `user_approval` 노드가 거절·수정 요청을 받을 때마다 한 건씩 추가합니다. 거절 후 대안 제시는 `rejected_history[-1]`(가장 최근)을, Critic의 D6 검사는 목록 전체를 참고합니다.
 
 ---
 
