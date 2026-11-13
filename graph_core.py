@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
@@ -86,9 +86,38 @@ def supervisor_node(state: AgentState):
         print(f" -> [경고] LLM 판별 중 오류 발생, fallback 처리: {e}")
         return {"request_type": "general", **NEW_REQUEST_RESET}
 
+def build_dummy_context(today=None) -> dict:
+    """[임시 더미] 맥락 수집 노드가 실제로 만들 context_data와 같은 모양의 예시 데이터.
+    TODO(지인): 실제 API(Google Calendar·Tasks, 날씨, 생체 데이터) 결과를 이 형식으로 채워 반환.
+    키 이름·필드는 planner_nodes(채린)와 Critic 규칙(원형)이 그대로 읽으므로 바꾸면 README와 함께 공지."""
+    today = today or datetime.now().date()
+    d = lambda days: (today + timedelta(days=days)).strftime("%Y-%m-%d")
+    return {
+        "today": d(0),                       # 기준 날짜 YYYY-MM-DD
+        "active_hours": "08:00-23:00",       # 사용자 활동 시간대 (D4)
+        "calendar_events": [                 # 고정 일정 (A3, E3, D3)
+            {"id": "evt_001", "title": "캡스톤 팀 회의", "start_time": "10:00", "end_time": "11:00",
+             "is_fixed": True, "is_adjustable": False, "has_attendees": True, "location": "공학관 302호"},
+            {"id": "evt_002", "title": "인공지능 수업", "start_time": "14:00", "end_time": "15:30",
+             "is_fixed": True, "is_adjustable": False, "has_attendees": True, "location": "공학관 101호"},
+            {"id": "evt_003", "title": "개인 운동", "start_time": "19:00", "end_time": "20:00",
+             "is_fixed": True, "is_adjustable": True, "has_attendees": False, "location": "학교 체육관"},
+        ],
+        "tasks": [                           # 할 일 (A1, A2, A5, A6, E1, E2)
+            {"id": "task_001", "title": "데이터베이스 과제 제출", "deadline": f"{d(0)} 18:00",
+             "is_collaborative": False, "estimated_minutes": 120},
+            {"id": "task_002", "title": "팀 발표 슬라이드 작성", "deadline": f"{d(1)} 23:59",
+             "is_collaborative": True, "estimated_minutes": 90},
+            {"id": "task_003", "title": "논문 읽기", "deadline": f"{d(5)} 23:59",
+             "is_collaborative": False, "estimated_minutes": 60},
+        ],
+        "biometrics": {"sleep_hours": 5.5, "sleep_score": 60, "steps_yesterday": 4200},  # 컨디션 분석
+        "weather": {"condition": "비", "temperature_c": 12},
+    }
+
 def context_collector_node(state: AgentState):
-    print("[맥락 수집] 외부 API 병렬 호출 중...")
-    return {"context_data": {"calendar": "회의 2건", "weather": "비", "sleep_score": 60}}
+    print("[맥락 수집] 외부 API 병렬 호출 중... (현재 더미 데이터)")
+    return {"context_data": build_dummy_context()}
 
 def purchase_advisor_node(state: AgentState):
     print("[구매 어드바이저] 구매 추천/보류 초안 작성 중...")

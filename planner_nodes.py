@@ -6,6 +6,11 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from config import llm_small, llm_large
 from state import get_last_user_message
 
+# 플래너 내부 자체 검사 반복 횟수 (첫 시도 포함).
+# 그래프 재작업(MAX_REWORK=2)과 곱해져 대형 LLM 호출이 최대 (1+2)×PLANNER_MAX_ATTEMPTS번이 되므로 2로 제한.
+# (3이면 최대 9번, 2면 최대 6번) 데모 속도가 더 필요하면 1로.
+PLANNER_MAX_ATTEMPTS = 2
+
 
 # =====================================================================
 # 1. Structured Output 스키마 정의 (Critic 연동용 ID 및 규칙 필드 반영)
@@ -326,7 +331,7 @@ def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     draft: Optional[PlannerDraftOutput] = None
     internal_violations: List[str] = []
 
-    for attempt in range(1, 4):
+    for attempt in range(1, PLANNER_MAX_ATTEMPTS + 1):
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=base_user_content)]
         if internal_violations:
             retry_msg = "방금 생성한 계획에서 다음 규칙 위반이 발견되었습니다. 모두 수정하여 다시 출력하세요:\n- " + "\n- ".join(internal_violations)
@@ -339,7 +344,7 @@ def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
             print(f" -> [자체 Critic 검사 통과] {attempt}회차에 위반 0건으로 확정")
             break
         else:
-            print(f" -> [자체 재계획 루프 {attempt}/3] 위반 {len(internal_violations)}건 감지, 재조정 중: {internal_violations}")
+            print(f" -> [자체 재계획 루프 {attempt}/{PLANNER_MAX_ATTEMPTS}] 위반 {len(internal_violations)}건 감지, 재조정 중: {internal_violations}")
 
     draft_proposal = {
         "date": today_str,
