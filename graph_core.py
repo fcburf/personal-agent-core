@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from state import AgentState
 from config import llm_small, llm_large
+from planner_nodes import condition_analyzer_node, planner_agent_node
 
 # ==========================================
 # [0] Supervisor 구조화 출력 스키마 및 프롬프트
@@ -82,15 +83,6 @@ def supervisor_node(state: AgentState):
 def context_collector_node(state: AgentState):
     print("[맥락 수집] 외부 API 병렬 호출 중...")
     return {"context_data": {"calendar": "회의 2건", "weather": "비", "sleep_score": 60}}
-
-def condition_analyzer_node(state: AgentState):
-    print("[컨디션 분석] DB 패턴 및 생체 데이터로 에너지 점수 산출 중...")
-    return {"condition_score": {"morning": 80, "afternoon": 40}}
-
-def planner_agent_node(state: AgentState):
-    print("[일정 플래너] llm_large를 활용해 일정 재배치 초안 작성 중...")
-    # draft_proposal이 Dict[str, Any]로 변경됨
-    return {"draft_proposal": {"action": "reschedule", "target": "오후 회의", "reason": "오후 에너지 부족"}}
 
 def purchase_advisor_node(state: AgentState):
     print("[구매 어드바이저] 구매 추천/보류 초안 작성 중...")
