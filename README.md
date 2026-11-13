@@ -57,7 +57,7 @@ personal-agent-core/
 ├── .gitignore          # Git 추적 제외 설정 (.env, DB, PDF 등)
 ├── README.md           # [본 문서] 프로젝트 아키텍처 및 State 스키마 명세
 ├── requirements.txt    # 의존성 패키지 목록
-├── config.py           # Gemini 3.8 Flash/Pro LLM 및 환경 설정
+├── config.py           # Gemini LLM 설정 (소형 3.8 Flash / 대형 3.1 Pro Preview, v1beta)
 ├── state.py            # 노드 간 공유되는 공통 AgentState 스키마
 ├── graph_core.py       # LangGraph 전체 워크플로우 (Supervisor, Critic 루프, Interrupt)
 └── db_init.py          # 장기 메모리(SQLite) 테이블 초기화 스크립트
@@ -70,7 +70,7 @@ personal-agent-core/
 
 1. **계층형 모델 분리 (Cost & Latency Optimization)**:
    * 빠른 응답이 필요한 라우팅(`Supervisor`) 및 데이터 추출에는 **`Gemini 3.8 Flash`**를 적용하여 지연시간과 비용을 최소화했습니다.
-   * 깊은 추론과 논리 검증이 필요한 플래너/비평가(`Critic`)에는 **`Gemini 3.8 Pro`**를 배치하여 높은 판단 품질을 확보했습니다.
+   * 깊은 추론과 논리 검증이 필요한 플래너/비평가(`Critic`)에는 **`Gemini 3.1 Pro Preview`**를 배치하여 높은 판단 품질을 확보했습니다.
 2. **엄격한 계약 기반 라우팅 (Structured Output Contract)**:
    * LLM의 환각(Hallucination)이나 임의의 문자열 변형으로 인한 조건부 라우팅 오류를 차단하기 위해 **Pydantic 스키마 기반 구조화된 출력**을 강제했습니다.
 3. **Human-in-the-Loop & 대안 제시 루프**:
@@ -161,9 +161,10 @@ cp .env.example .env
 ```env
 GOOGLE_API_KEY="your-gemini-api-key-here"
 
-# 모델 설정 (기본값: 최신 Gemini 3.8 라인업)
+# 모델 설정 (기본값: 소형 3.8 Flash / 대형 3.1 Pro Preview)
 # GEMINI_MODEL_SMALL="gemini-3.8-flash"
-# GEMINI_MODEL_LARGE="gemini-3.8-pro"
+# GEMINI_MODEL_LARGE="gemini-3.1-pro-preview"
+# GEMINI_API_VERSION="v1beta"   # preview 모델은 v1beta에서만 동작
 ```
 
 ### 3. 장기 메모리(SQLite) 초기화
