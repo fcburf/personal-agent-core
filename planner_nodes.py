@@ -1,20 +1,9 @@
-import os
 import json
 from typing import Dict, Any, List, Optional, Literal
-from datetime import datetime, timedelta
+from datetime import datetime
 from pydantic import BaseModel, Field
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
-
-# =====================================================================
-# 0. LLM 초기화 헬퍼
-# =====================================================================
-def _get_llm(model_type: str = "large") -> ChatGoogleGenerativeAI:
-    if model_type == "small":
-        model_name = os.getenv("GEMINI_MODEL_SMALL", "gemini-2.5-flash")
-        return ChatGoogleGenerativeAI(model=model_name, temperature=0.1)
-    model_name = os.getenv("GEMINI_MODEL_LARGE", "gemini-2.5-pro")
-    return ChatGoogleGenerativeAI(model=model_name, temperature=0.2)
+from config import llm_small, llm_large
 
 
 # =====================================================================
@@ -78,7 +67,7 @@ def condition_analyzer_node(state: Dict[str, Any]) -> Dict[str, Any]:
         scores = {"morning": 70, "afternoon": 60, "evening": 50, "summary": "생체/환경 데이터 미제공으로 기본 에너지 기준 적용"}
         return {"condition_score": scores}
 
-    llm = _get_llm("small").with_structured_output(ConditionAnalysisOutput)
+    llm = llm_small.with_structured_output(ConditionAnalysisOutput)
     prompt = f"""당신은 개인 비서 시스템의 컨디션 분석가입니다.
 제공된 실제 생체 및 환경 데이터만을 근거로 오늘의 시간대별(오전/오후/저녁) 에너지 점수(0~100)를 산출하세요.
 [절대 규칙 - B1, C2, C3 방지]
@@ -100,8 +89,20 @@ def condition_analyzer_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =====================================================================
-# 3. 내부 유틸리티: ID 기반 자체 Critic 조건표(A1~E3) 검증 함수
+# 3. 내부 유틸리티: 메시지 추출 및 ID 기반 자체 Critic 조건표(A1~E3) 검증
 # =====================================================================
+def _extract_latest_user_message(state: Dict[str, Any]) -> str:
+    """state['messages'][-1].content에서 최신 사용자 메시지 추출 (dict/Message 객체 모두 호환)"""
+    messages = state.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        if hasattr(last_msg, "content"):
+            return str(last_msg.content)
+        if isinstance(last_msg, dict):
+            return str(last_msg.get("content", ""))
+    return str(state.get("user_message", ""))
+
+
 def _parse_time_to_min(t_str: str) -> int:
     try:
         h, m = map(int, t_str.strip().split(":"))
@@ -126,7 +127,6 @@ def _validate_plan(
 ) -> List[str]:
     """
     Critic 판정 조건표(A1~A6, B3, C1, D1, D3, D4, E1~E3)를 원본 ID 기준으로 자체 검증.
-    위반 사항이 있으면 구체적 수정 지시 문자열 리스트를 반환.
     """
     violations: List[str] = []
     blocks = draft.schedule_blocks
@@ -154,13 +154,11 @@ def _validate_plan(
 
         time_changed = (matched.start_time != orig_start) or (matched.end_time != orig_end)
         if not is_adjustable:
-            # 조정 불가 고정 일정
             if time_changed or matched.status == "proposed" or ev_id in changed_by_id:
                 violations.append(
                     f"[A3-1/A3-2] 조정 불가 고정 일정(id={ev_id}, '{title}', {orig_start}~{orig_end})을 이동하거나 제안했습니다. 원래 시간대로 고정하고, 겹치면 unresolvable_warnings에만 기록하세요."
                 )
         else:
-            # 조정 가능 고정 일정 (E3)
             if time_changed and matched.status != "proposed":
                 violations.append(
                     f"[E3] 조정 가능 고정 일정(id={ev_id}, '{title}') 이동 시 status를 반드시 'proposed'로 표시해야 합니다."
@@ -188,38 +186,32 @@ def _validate_plan(
             except Exception:
                 pass
 
-        is_urgent = days_left <= 2  # 오늘(0), 내일(1), 모레(2)
+        is_urgent = days_left <= 2
         scheduled_block = block_by_id.get(t_id)
         postponed_item = postponed_by_id.get(t_id)
 
-        # C1: 명시적 휴식 요청이 없으면 날짜 연기 금지
         if postponed_item and not user_requested_rest:
             violations.append(
                 f"[C1] 사용자가 휴식/연기를 명시하지 않았는데 작업(id={t_id}, '{title}')을 연기했습니다. 오늘 일정 내에서 재배치하세요."
             )
 
-        # A5 / E1: 협업 업무 또는 긴박한 업무(마감 오늘~2일)는 연기 불가
         if postponed_item and (is_collab or is_urgent):
             violations.append(
                 f"[A5] 협업 업무 또는 긴박한 업무(id={t_id}, '{title}', 마감 D-{days_left})는 연기할 수 없습니다. 오늘 일정에 배치하세요."
             )
 
-        # A1: 오늘 마감 작업 누락 검사
         if days_left == 0 and not scheduled_block:
             violations.append(
                 f"[A1] 오늘 마감인 작업(id={t_id}, '{title}')이 계획에서 누락되었습니다. 반드시 오늘 마감 시각({deadline_str}) 전에 배치하세요."
             )
 
-        # 배치된 경우 검사 (A2, A6, E2)
         if scheduled_block:
             end_m = _parse_time_to_min(scheduled_block.end_time)
-            # A2: 오늘 마감 시각 초과 여부
             if days_left == 0 and end_m > deadline_time_min:
                 violations.append(
                     f"[A2] 오늘 마감 작업(id={t_id}, '{title}')이 마감 시각({deadline_str}) 이후({scheduled_block.end_time})에 배치되었습니다."
                 )
 
-            # A6: 일반 조절/브리핑 요청에서 긴박한 업무 분량 축소 금지
             is_reduced = (
                 scheduled_block.status == "reduced"
                 or scheduled_block.duration_minutes < orig_duration
@@ -279,9 +271,10 @@ def _validate_plan(
 # =====================================================================
 def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     print("[일정 플래너] Critic 조건표(A1~E3) 준수 모드: 작업 분류 및 재배치 시작...")
-    user_message = state.get("user_message", "")
+    user_message = _extract_latest_user_message(state)
     context_data = state.get("context_data", {})
     condition_score = state.get("condition_score", {"morning": 70, "afternoon": 60, "evening": 50})
+    critic_verdict = state.get("critic_verdict", "")
     critic_result = state.get("critic_result") or {}
     rejected_history = state.get("rejected_history", [])
 
@@ -291,9 +284,9 @@ def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     active_window = context_data.get("active_hours", "08:00-23:00")
 
     user_requested_rest = _detect_explicit_rest_request(user_message)
-    external_feedback = critic_result.get("feedback", "") if critic_result.get("verdict") == "rework" else ""
+    external_feedback = critic_result.get("feedback", "") if critic_verdict == "rework" else ""
 
-    llm = _get_llm("large").with_structured_output(PlannerDraftOutput)
+    llm = llm_large.with_structured_output(PlannerDraftOutput)
 
     system_prompt = f"""당신은 개인 비서 시스템의 '일정 에이전트(Schedule Agent)'입니다.
 컨디션 점수와 일정/할 일 데이터를 바탕으로 최적의 하루 일정을 설계하세요.
@@ -334,7 +327,6 @@ def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if external_feedback:
         base_user_content += f"\n[⚠️ 이전 Critic 반려 피드백 - 반드시 반영하여 수정할 것]:\n{external_feedback}\n"
 
-    # 내부 재계획 루프 (최대 3회 시도)
     draft: Optional[PlannerDraftOutput] = None
     internal_violations: List[str] = []
 
@@ -353,7 +345,6 @@ def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print(f" -> [자체 재계획 루프 {attempt}/3] 위반 {len(internal_violations)}건 감지, 재조정 중: {internal_violations}")
 
-    # Critic 노드가 바로 참조할 수 있도록 요구된 모든 필드 포함
     draft_proposal = {
         "date": today_str,
         "user_requested_rest": user_requested_rest,
