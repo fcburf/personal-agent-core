@@ -40,8 +40,8 @@ flowchart TD
     Critic -.->|"재작업 2회 후 high 잔존: 경고 표시<br/>critical 잔존: 원래 일정 유지 안내"| Communicator
     Planner <-.-|"수정 요청 modify<br/>(D6: 일정 재배치)"| UserApproval
     Interview <-.-|"수정 요청 modify<br/>(회고)"| UserApproval
-    Communicator -.->|"일반 대화 / 원래 일정 유지<br/>(승인할 제안 없음)"| End
-    Communicator <-.-|"단순 거절 rejected<br/>(대안 메시지 생성)"| UserApproval
+    Communicator -.->|"일반 대화 / 원래 일정 유지 / 거절 후 안내<br/>(awaiting_approval = False)"| End
+    Communicator <-.-|"거절 rejected<br/>(원래 일정 유지 + 무엇을 바꿀지 질문)"| UserApproval
 ```
 
 > **읽는 법**: 실선(→)은 정상 진행 흐름, 점선(⇢)은 분기·재작업·사용자 피드백 루프입니다.
@@ -84,6 +84,8 @@ personal-agent-core/
 
 모든 에이전트 노드는 `state.py`의 `AgentState`를 공유하며, 필요한 데이터를 읽고 자신의 결과값을 업데이트합니다.
 
+> **사용자 메시지 읽기 규칙**: 사용자 메시지의 원본은 `messages` 하나입니다. 별도 `user_message` 칸을 만들지 말고 `from state import get_last_user_message`로 읽어 주세요.
+
 ### 1. `AgentState` 필드 목록
 
 | 필드명 | 타입 | 담당 에이전트 | 설명 및 예시 |
@@ -101,6 +103,7 @@ personal-agent-core/
 | `final_response` | `str` | 커뮤니케이터 | 사용자에게 전달할 최종 안내 메시지 (결론 ➔ 이유 ➔ 대안) |
 | `user_decision` | `UserDecision` | 화면 / 승인 | **사용자의 승인 및 수정 피드백** (하단 ② 참조) |
 | `rejected_history` | `Annotated[List[RejectedEntry], operator.add]` | 승인 | 거절·수정 이력 누적, 덮어쓰지 않고 뒤에 추가됨 (D6 검사용, 하단 ③ 참조) |
+| `awaiting_approval` | `bool` | 커뮤니케이터 | 응답 뒤 사용자 승인이 필요한지. `False`면 승인 없이 종료 (일반 대화 / 원래 일정 유지 / 거절 후 안내) |
 
 ---
 
@@ -128,11 +131,12 @@ class UserDecision(TypedDict, total=False):
 ```python
 class RejectedEntry(TypedDict, total=False):
     status: str                    # 'rejected' | 'modify' (승인 approved는 기록하지 않음)
-    changes: Any                   # 거절·수정 대상이 된 변경 내용 (draft_proposal 형식 확정 전까지는 제안 전체)
+    changes: Any                   # 거절·수정 대상이 된 변경 내용 (일정 플래너: changed_items + postponed_tasks)
     feedback: Optional[str]        # 사용자 피드백
     decided_at: Optional[str]      # 결정 시각 (ISO 8601)
 ```
-> `user_approval` 노드가 거절·수정 요청을 받을 때마다 한 건씩 추가합니다. 거절 후 대안 제시는 `rejected_history[-1]`(가장 최근)을, Critic의 D6 검사는 목록 전체를 참고합니다.
+> `user_approval` 노드가 거절·수정 요청을 받을 때마다 한 건씩 추가합니다. Critic의 D6 검사는 목록 전체를 참고합니다.
+> 수정 요청(modify)의 `feedback`은 `messages`에도 사용자 메시지로 추가되어, 플래너가 `get_last_user_message(state)`로 읽습니다.
 
 ---
 
@@ -191,10 +195,11 @@ final_result = app.invoke(None, config)  # action_executor가 실행되어 캘�
 
 # 4. 사용자가 [수정/거절] 요청 시:
 app.update_state(config, {"user_decision": {"status": "modify", "feedback": "3시 일정은 내일로 미뤄줘"}})
-app.invoke(None, config)  # modify → 담당 에이전트가 다시 계획 → Critic 재검증 / rejected → 커뮤니케이터가 대안 제시
+app.invoke(None, config)  # modify → 담당 에이전트가 다시 계획 → Critic 재검증 / rejected → "원래 일정 유지 + 무엇을 바꿀지" 안내 후 종료
 
 # 5. 승인 단계 없이 끝나는 경우 (app.get_state(config).next == ())
-#    - 일반 대화(general), critic_verdict == "keep_original"(원래 일정 유지)
+#    - 일반 대화(general), critic_verdict == "keep_original"(원래 일정 유지), 거절(rejected) 후 안내
+#    - 판단 기준: state["awaiting_approval"] == False
 #    → final_response만 표시하고 승인 버튼은 숨김
 ```
 

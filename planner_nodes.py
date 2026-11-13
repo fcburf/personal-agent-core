@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 from config import llm_small, llm_large
+from state import get_last_user_message
 
 
 # =====================================================================
@@ -92,15 +93,10 @@ def condition_analyzer_node(state: Dict[str, Any]) -> Dict[str, Any]:
 # 3. 내부 유틸리티: 메시지 추출 및 ID 기반 자체 Critic 조건표(A1~E3) 검증
 # =====================================================================
 def _extract_latest_user_message(state: Dict[str, Any]) -> str:
-    """state['messages'][-1].content에서 최신 사용자 메시지 추출 (dict/Message 객체 모두 호환)"""
-    messages = state.get("messages", [])
-    if messages:
-        last_msg = messages[-1]
-        if hasattr(last_msg, "content"):
-            return str(last_msg.content)
-        if isinstance(last_msg, dict):
-            return str(last_msg.get("content", ""))
-    return str(state.get("user_message", ""))
+    """최신 '사용자' 메시지 추출 → 공용 도우미(state.get_last_user_message) 사용.
+    [통합] messages[-1]은 커뮤니케이터가 AI 답변을 messages에 추가하면 AI 문장이 되므로,
+    마지막 Human 메시지를 찾는 공용 함수로 통일 (수정 요청 피드백도 여기서 함께 읽힘)."""
+    return get_last_user_message(state)
 
 
 def _parse_time_to_min(t_str: str) -> int:

@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from state import AgentState
@@ -48,6 +49,11 @@ SUPERVISOR_PROMPT = """당신은 개인 비서 시스템의 요청 라우터(Sup
 # ==========================================
 # [1] 에이전트 노드
 # ==========================================
+# 새 요청이 시작될 때마다 지난 요청의 흔적을 지우는 칸들.
+# (같은 thread_id에서 이전 요청의 user_decision="rejected"나 rework_count=3이 남아 있으면
+#  새 요청이 '거절 후'로 오인되거나 재작업 기회 없이 끝나버림)
+NEW_REQUEST_RESET = {"user_decision": {}, "rework_count": 0, "is_valid": False}
+
 def supervisor_node(state: AgentState):
     """소형 LLM(llm_small)을 호출하여 사용자 메시지 기반으로 요청 유형을 지능적으로 판별"""
     print("\n[Supervisor] 사용자 메시지 분석 및 요청 종류 판별 중...")
@@ -58,7 +64,7 @@ def supervisor_node(state: AgentState):
     if not messages:
         default_req = state.get("request_type", "morning_briefing")
         print(f" -> 메시지가 없어 기본값 적용: {default_req}")
-        return {"request_type": default_req}
+        return {"request_type": default_req, **NEW_REQUEST_RESET}
     
     # 2. 최근 대화 맥락 3개 추출 (비용 최소화 + 맥락 확보 설계)
     recent_messages = messages[-3:]
@@ -75,10 +81,10 @@ def supervisor_node(state: AgentState):
         chain = prompt | structured_router
         decision: SupervisorDecision = chain.invoke({})
         print(f" -> 판별 결과: [{decision.request_type}] (이유: {decision.reasoning})")
-        return {"request_type": decision.request_type}
+        return {"request_type": decision.request_type, **NEW_REQUEST_RESET}
     except Exception as e:
         print(f" -> [경고] LLM 판별 중 오류 발생, fallback 처리: {e}")
-        return {"request_type": "general"}
+        return {"request_type": "general", **NEW_REQUEST_RESET}
 
 def context_collector_node(state: AgentState):
     print("[맥락 수집] 외부 API 병렬 호출 중...")
@@ -148,18 +154,40 @@ def critic_node(state: AgentState):
         "rework_count": new_count,
     }
 
+def needs_approval(state: AgentState) -> bool:
+    """[오케스트레이션] 이번 커뮤니케이터 응답 뒤에 사용자 승인이 필요한가?
+    승인할 제안이 없는 경우: 일반 대화 / 원래 일정 유지(keep_original) / 거절 후 안내"""
+    if state.get("request_type") == "general":
+        return False
+    if state.get("critic_verdict") == "keep_original":
+        return False
+    if is_after_rejection(state):
+        return False
+    return True
+
 def communicator_node(state: AgentState):
+    """커뮤니케이터 = 문구(원형 님) + 승인 필요 여부 기록(리드).
+    awaiting_approval은 반드시 이 노드가 기록한다. 라우터가 user_decision을 직접 보면,
+    UI가 update_state로 결정을 써넣는 순간 라우터가 다시 계산되어 user_approval 노드가 건너뛰어진다."""
+    result = _communicator_message(state)
+    result["awaiting_approval"] = needs_approval(state)
+    return result
+
+def _communicator_message(state: AgentState):
     """TODO(원형): 안내 문구 작성. critic_verdict 값에 따라 문구 분기.
     - "pass"          : 결론 → 이유 → 대안 (critic_result.violated_rules의 medium·low 경고 표시)
     - "warn"          : 위와 같되 경고 표시를 붙여 전달
     - "keep_original" : 제안을 내보내지 않고 "원래 일정 유지" + 충돌 이유 안내 (승인 단계 없이 종료)
     - request_type == "general" : 일반 대화 응답 (승인 단계 없이 종료)
-    - user_decision.status == "rejected" : rejected_history[-1]을 참고해 대안 제시
+    - 거절 후(user_decision.status == "rejected") : "원래 일정 유지 + 무엇을 바꾸고 싶은지" 질문 (승인 단계 없이 종료)
+      (커뮤니케이터는 draft_proposal을 바꾸지 못하므로, 거절된 계획을 다시 승인받지 않는다)
     """
     verdict = state.get("critic_verdict")
     print(f"[커뮤니케이터] 결론 -> 이유 -> 대안 순서로 메시지 포매팅 중... (verdict={verdict})")
     if state.get("request_type") == "general":
         return {"final_response": "안녕하세요! 일정 브리핑, 구매 상담, 저녁 회고를 도와드릴 수 있어요."}
+    if is_after_rejection(state):
+        return {"final_response": "알겠습니다. 오늘은 원래 일정을 그대로 유지할게요. 바꾸고 싶은 부분이 있으면 말씀해 주세요."}
     if verdict == "keep_original":
         return {"final_response": "검토 결과 마감·고정 일정을 지킬 수 있는 안전한 재배치안을 찾지 못해 원래 일정을 유지합니다."}
     prefix = "⚠️ [확인 필요] " if verdict == "warn" else ""
@@ -178,7 +206,7 @@ def user_approval_node(state: AgentState):
     proposal = state.get("draft_proposal") or {}
     entry = {
         "status": status,
-        "changes": proposal.get("changes", proposal),  # 채린 님 draft_proposal 형식 확정 전까지 전체 저장
+        "changes": extract_changes(proposal),
         "feedback": decision.get("feedback", ""),
         "decided_at": decision.get("decided_at") or datetime.now().isoformat(timespec="seconds"),
     }
@@ -187,7 +215,20 @@ def user_approval_node(state: AgentState):
         # 사용자 요청으로 새 계획을 짜는 것이므로 재작업 기회를 다시 2회 부여
         # (critic_verdict는 Critic이 재검사하며 덮어쓰므로 초기화하지 않음)
         update.update({"rework_count": 0, "is_valid": False})
+        # 수정 요청 문장("3시 일정은 내일로")을 사용자 메시지로 남겨, 플래너가 get_last_user_message로 읽게 함
+        if decision.get("feedback"):
+            update["messages"] = [HumanMessage(content=decision["feedback"])]
     return update
+
+def extract_changes(proposal: dict):
+    """거절·수정 이력(D6 검사용)에 남길 '바뀐 내용'만 추린다.
+    일정 플래너 형식: changed_items + postponed_tasks / 그 외: changes 칸, 없으면 제안 전체."""
+    if "changed_items" in proposal or "postponed_tasks" in proposal:
+        return {
+            "changed_items": proposal.get("changed_items", []),
+            "postponed_tasks": proposal.get("postponed_tasks", []),
+        }
+    return proposal.get("changes", proposal)
 
 def action_executor_node(state: AgentState):
     """승인된 제안을 실제 외부 시스템(Google Calendar API, SQLite DB 등)에 반영하는 노드"""
@@ -244,11 +285,12 @@ def route_after_critic(state: AgentState) -> str:
         return target_agent
     return AGENT_BY_REQUEST.get(state.get("request_type"), "communicator")
 
+def is_after_rejection(state: AgentState) -> bool:
+    return (state.get("user_decision") or {}).get("status") == "rejected"
+
 def route_after_communicator(state: AgentState) -> str:
-    """승인할 제안이 없는 경우(일반 대화, 원래 일정 유지)는 승인 단계 없이 종료"""
-    if state.get("request_type") == "general" or state.get("critic_verdict") == "keep_original":
-        return "end"
-    return "user_approval"
+    """커뮤니케이터가 기록한 awaiting_approval만 보고 분기 (user_decision을 직접 보지 않음)"""
+    return "user_approval" if state.get("awaiting_approval") else "end"
 
 def route_after_approval(state: AgentState) -> str:
     """사용자 결정(user_decision)에 따라 분기:

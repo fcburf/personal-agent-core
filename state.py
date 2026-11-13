@@ -55,6 +55,27 @@ class AgentState(TypedDict):
     #    "keep_original"  : 재작업 2회 후에도 critical 잔존 → 제안을 내보내지 않고 "원래 일정 유지" 안내
     critic_verdict: Literal["rework", "pass", "warn", "keep_original"]
 
+    # 10. 커뮤니케이터 응답 뒤 사용자 승인이 필요한지 (커뮤니케이터 노드가 기록, 라우터가 읽음)
+    #     False: 일반 대화 / 원래 일정 유지 / 거절 후 안내 → 승인 단계 없이 종료
+    awaiting_approval: bool
+
     # 9. 사용자가 거절·수정한 제안 이력 (D6: 거절한 제안 재제출 금지 검사용, 누적)
     #    각 항목: {"status": "rejected"|"modify", "changes": ..., "feedback": str, "decided_at": str}
     rejected_history: Annotated[List[RejectedEntry], operator.add]
+
+# ==========================================
+# 공용 도우미: 노드들이 State에서 값을 꺼낼 때 같은 방식으로 읽도록 통일
+# ==========================================
+def get_last_user_message(state) -> str:
+    """messages에서 가장 최근 사용자(Human) 메시지 텍스트를 꺼낸다.
+    사용자 메시지의 원본은 messages 하나뿐이다 (user_message 같은 별도 칸을 두지 않음).
+    수정 요청(modify) 피드백도 user_approval 노드가 messages에 추가하므로 여기서 함께 읽힌다."""
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "type", None) == "human":
+            content = msg.content
+            if isinstance(content, list):  # 멀티모달 메시지: 텍스트 조각만 이어 붙임
+                content = " ".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+                )
+            return str(content)
+    return ""
