@@ -30,8 +30,10 @@ class ScheduleBlock(BaseModel):
     title: str = Field(description="일정 또는 작업 제목")
     task_type: Literal["fixed", "important", "flexible", "break"] = Field(description="작업 분류")
     status: Literal["kept", "moved", "reduced", "proposed", "added"] = Field(description="상태 (고정 일정 이동 제안은 반드시 'proposed')")
-    location: str = Field(default="", description="장소")
-
+    location: str = Field(
+        default="",
+        description="원본 calendar_events에 명시된 장소만 그대로 기재. 할 일(tasks)이나 휴식(break) 블록은 입력에 없으면 반드시 빈 문자열('')로 둘 것 (임의 장소 생성 금지)"
+    )
 
 class ChangedItem(BaseModel):
     id: str = Field(description="원본 캘린더 이벤트 또는 할 일의 고유 ID")
@@ -315,8 +317,9 @@ def planner_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 - 입력에 없는 날씨, 과거 구매 기록, 확인되지 않은 습관을 절대 언급하지 마세요(B1, B2, C2, C3).
 - 일정 간 시간 겹침 금지(A4), 다른 장소 간 이동 시간 최소 15분 확보(D3), 활동 시간({active_window}) 준수(D4), 4시간 이상 활동 시 식사/휴식(task_type='break') 필수 포함(D1).
 - 이전 거절 이력(rejected_history)과 동일한 제안 반복 금지(D6).
+- [장소(location) 규칙 - B1, D3 방지]: 할 일(tasks)과 휴식(break) 블록의 location은 반드시 빈 문자열("")로 비워 두세요. 입력 데이터에 없는 장소("학생식당", "스터디룸", "자택" 등)를 절대 지어내지 마세요. 캘린더 고정 일정(calendar_events)에 원래 location 값이 있는 경우에만 그대로 유지하세요.
 """
-
+    
     base_user_content = f"""[기준 날짜]: {today_str}
 [사용자 요청]: "{user_message}"
 [명시적 휴식/연기 요청 여부(user_requested_rest)]: {user_requested_rest}
