@@ -17,3 +17,28 @@ env/
 
 # 개인 컨텍스트 및 AI 작업 메모
 PROJECT_CONTEXT.md
+
+# Google authentication
+credentials.json
+token.json
+*credentials*.json
+*token*.json
+
+# Environment variables
+.env.*
+!.env.example
+
+# Python cache
+*.py[cod]
+
+# SQLite additional files
+*.db-*
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local backups and patches
+*.backup_*
+*.bak
+*.bak.*
+apply_*_patch.py
