@@ -113,6 +113,19 @@ def build_dummy_context(today=None) -> dict:
         ],
         "biometrics": {"sleep_hours": 5.5, "sleep_score": 60, "steps_yesterday": 4200},  # 컨디션 분석
         "weather": {"condition": "비", "temperature_c": 12},
+        "spending": {                        # 구매·지출 (예정 님 spending_builder). 구매 에이전트·Critic(PA1·PA2)이 읽음
+            "records": [
+                {"item_name": "자연 담은 스틱꿀", "category": "식품", "price": 15000,
+                 "purchase_date": d(-3), "data_source": "capture"},
+                {"item_name": "무선 마우스", "category": "전자기기", "price": 69000,
+                 "purchase_date": d(-1), "data_source": "gmail"},
+            ],
+            "weekly_total": 84000,           # 최근 7일 합계
+            "monthly_total": 213000,         # 이번 달 합계 (PA1 예산 검사)
+            "monthly_budget": None,          # 사용자가 정한 월 예산, 미설정이면 None → PA1 검사 생략
+            "by_category": {"식품": 15000, "전자기기": 69000},
+            "data_quality": "ok",            # 건수가 적으면 "insufficient" → 구매 에이전트가 이력을 지어내지 않게 함
+        },
     }
 
 def context_collector_node(state: AgentState):
@@ -120,12 +133,31 @@ def context_collector_node(state: AgentState):
     return {"context_data": build_dummy_context()}
 
 def purchase_advisor_node(state: AgentState):
-    print("[구매 어드바이저] 구매 추천/보류 초안 작성 중...")
-    return {"draft_proposal": {"action": "hold", "target": "기계식 키보드", "reason": "이번 주 예산 초과"}}
+    """[임시 더미] TODO(서경): 실제 구매 어드바이저로 교체. 출력 형식은 state.PurchaseProposal"""
+    print("[구매 어드바이저] 구매 추천/보류 초안 작성 중... (현재 더미)")
+    return {"draft_proposal": {
+        "decision": "hold",
+        "item": "기계식 키보드",
+        "category": "전자기기",
+        "criteria": ["타건감", "소음"],
+        "candidates": [],
+        "impulse_signals": ["주간 지출 초과"],
+        "evidence": ["이번 주 지출 84,000원 (주간 평균 대비 높음)"],
+        "revisit_at": None,
+    }}
 
 def recall_interview_node(state: AgentState):
-    print("[회상 인터뷰] 과거 구매 만족도 인터뷰 진행 중...")
-    return {"draft_proposal": {"interview_item": "블루투스 이어폰", "questions": ["음질은 어땠나요?"]}}
+    """[임시 더미] TODO(서경): 실제 회상 인터뷰로 교체. 출력 형식은 state.RecallResult"""
+    print("[회상 인터뷰] 과거 구매 만족도 인터뷰 진행 중... (현재 더미)")
+    return {"draft_proposal": {
+        "purchase_id": 1,
+        "recall_stage": "1_week",
+        "questions": ["블루투스 이어폰, 써보니 어떠셨나요?"],
+        "satisfaction": None,
+        "reason_tags": [],
+        "comment": None,
+        "skipped": False,
+    }}
 
 MAX_REWORK = 2  # 플래너 등 역할 에이전트가 다시 도는 최대 횟수 (Critic 검사는 최대 3번)
 SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}

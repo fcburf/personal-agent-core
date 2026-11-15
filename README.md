@@ -60,7 +60,7 @@ personal-agent-core/
 ├── config.py           # Gemini LLM 설정 (소형 3.8 Flash / 대형 3.1 Pro Preview, v1beta)
 ├── state.py            # 노드 간 공유되는 공통 AgentState 스키마
 ├── graph_core.py       # LangGraph 전체 워크플로우 (Supervisor, Critic 루프, Interrupt)
-└── db_init.py          # 장기 메모리(SQLite) 테이블 초기화 스크립트
+└── db_init.py          # 장기 메모리 DB(long_term_memory.db) 단일 스키마 + DB_PATH / get_connection
 ```
 
 ---
@@ -92,9 +92,9 @@ personal-agent-core/
 |---|---|---|---|
 | `messages` | `Annotated[List[BaseMessage], operator.add]` | 공통 | 대화 히스토리 누적 관리 |
 | `request_type` | `str` | Supervisor | 요청 유형 (`morning_briefing`, `purchase_consultation`, `retrospective`, `general`) |
-| `context_data` | `Dict[str, Any]` | 맥락 수집 | 외부 API 데이터 (`calendar`, `tasks`, `weather`, `sleep_score`, `spending`) |
+| `context_data` | `Dict[str, Any]` | 맥락 수집 | 외부 실제 데이터. 형식은 아래 **④ context_data 형식** (`calendar_events`, `tasks`, `biometrics`, `weather`, `spending` 등) |
 | `condition_score` | `Dict[str, Any]` | 컨디션 분석 | 시간대별 에너지 점수 (`{"morning": 80, "afternoon": 40}`) |
-| `draft_proposal` | `Dict[str, Any]` | 플래너 / 어드바이저 | 에이전트가 제안하는 작업/구매 초안 (`action`, `target`, `reason`) |
+| `draft_proposal` | `Dict[str, Any]` | 플래너 / 구매 어드바이저 / 회상 인터뷰 | 역할 에이전트의 제안 초안. **칸 이름은 하나로 통일**, 내용 모양만 시나리오별로 다름 (아래 **⑤ draft_proposal 형식**) |
 | `is_valid` | `bool` | Critic | 검증 통과 여부 (`True` / `False`) |
 | `critic_feedback` | `str` | Critic | 검증 피드백 요약 문장 |
 | `critic_result` | `CriticResult` | Critic | **구조화된 검증 상세 결과** (하단 ① 참조) |
@@ -138,6 +138,28 @@ class RejectedEntry(TypedDict, total=False):
 > `user_approval` 노드가 거절·수정 요청을 받을 때마다 한 건씩 추가합니다. Critic의 D6 검사는 목록 전체를 참고합니다.
 > 수정 요청(modify)의 `feedback`은 `messages`에도 사용자 메시지로 추가되어, 플래너가 `get_last_user_message(state)`로 읽습니다.
 
+#### ④ `context_data` 형식 (맥락 수집 → 컨디션 분석·역할 에이전트·Critic)
+예시 데이터는 `graph_core.py`의 `build_dummy_context()`에 있습니다. 실제 맥락 수집도 같은 모양으로 반환합니다.
+
+| 키 | 담당 | 내용 |
+|---|---|---|
+| `today` | 지인 | 기준 날짜 `YYYY-MM-DD` |
+| `active_hours` | 지인 | 활동 시간대 `"08:00-23:00"` (D4) |
+| `calendar_events` | 지인 | `[{id, title, start_time, end_time(HH:MM), is_fixed, is_adjustable, has_attendees, location}]` — 고정 일정은 기본 `is_adjustable=False`, 장소 없으면 `""` |
+| `tasks` | 지인 | `[{id, title, deadline(YYYY-MM-DD HH:MM), is_collaborative, estimated_minutes}]` |
+| `biometrics` | 지인 | 수면·피로도 (`sleep_score`, `sleep_hours`, `fatigue_level` 등) |
+| `weather` | 지인 | 날씨 (없으면 키 생략 → B1: 없는 날씨를 근거로 쓰면 안 됨) |
+| `spending` | 예정 | `{records: [{item_name, category, price, purchase_date, data_source}], weekly_total, monthly_total, monthly_budget(미설정이면 null), by_category, data_quality("ok" \| "insufficient")}` |
+
+#### ⑤ `draft_proposal` 형식 (역할 에이전트 → Critic → 커뮤니케이터 → 승인 → 실행)
+Critic·승인·`rejected_history`가 시나리오와 상관없이 같은 칸을 읽도록 **칸은 `draft_proposal` 하나**입니다. 타입 정의는 `state.py`.
+
+| 시나리오 | 작성 | 타입 | 주요 필드 |
+|---|---|---|---|
+| 아침 브리핑 | 일정 플래너 (채린) | `PlannerProposal` | `schedule_blocks`, `changed_items`, `postponed_tasks`, `unresolvable_warnings`, `remaining_violations`, `user_requested_rest` |
+| 구매 상담 | 구매 어드바이저 (서경) | `PurchaseProposal` | `decision`(recommend/hold), `item`, `category`, `criteria`, `candidates`, `impulse_signals`, `evidence`, `revisit_at` |
+| 저녁 회고 | 회상 인터뷰 (서경) | `RecallResult` | `purchase_id`, `recall_stage`(first_run/1_week/1_month), `questions`, `satisfaction`, `reason_tags`, `comment`, `skipped` |
+
 ---
 
 ## 🛠 환경 설정 및 시작 가이드
@@ -171,7 +193,16 @@ GOOGLE_API_KEY="your-gemini-api-key-here"
 ```bash
 python db_init.py
 ```
-> `long_term_memory.db` 파일이 생성되며 `purchase_history`(구매 이력/만족도) 및 `user_patterns`(사용자 패턴) 테이블이 준비됩니다.
+> 모든 팀원 코드는 **`long_term_memory.db` 파일 하나**를 함께 씁니다. DB 경로는 `from db_init import DB_PATH, get_connection`으로 가져옵니다 (각자 `xxx.db` 파일을 따로 만들지 않음). 여러 번 실행해도 안전합니다.
+
+| 테이블 | 작성 | 읽음 | 비고 |
+|---|---|---|---|
+| `purchase_history` | 구매·지출 데이터 (예정) | 구매 에이전트, 맥락 수집(spending) | 만족도 칸 없음 → `purchase_feedback`으로 분리 |
+| `purchase_feedback` | 회상 인터뷰 (서경) | 구매 기준 도출, Critic | 한 구매에 1주·1개월 회상 각각 한 행 |
+| `purchase_decisions` | 실행 에이전트 (구매 승인 후) | 구매 재검토, Critic(PD2) | 보류면 `revisit_at` |
+| `user_patterns` | 회고·컨디션 분석 | 컨디션 분석, 구매 에이전트 | `confirmed_count`로 '확인된 패턴' 관리 (C3·PC3·RA2) |
+| `tasks`, `task_work_schedules` | 일정 연동 (지인) | 맥락 수집(tasks) | 지인 님 스키마 그대로 + `is_collaborative` 추가 |
+| `daily_conditions` | 일정·생체 연동 (지인) | 맥락 수집(biometrics) | 지인 님 스키마 그대로 |
 
 ---
 

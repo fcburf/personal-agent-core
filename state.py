@@ -20,6 +20,43 @@ class UserDecision(TypedDict, total=False):
     feedback: Optional[str]        # 거절 또는 대안 요청 시 사용자 의견/피드백
     decided_at: Optional[str]      # 사용자 결정 시각 (ISO 8601 타임스탬프)
 
+# ==========================================
+# draft_proposal 형식 (역할 에이전트 → Critic → 커뮤니케이터 → 승인 → 실행)
+# 칸 이름은 시나리오와 상관없이 draft_proposal 하나. 내용 모양만 시나리오별로 다름.
+# (Critic·승인·rejected_history가 시나리오별 분기 없이 같은 칸을 읽도록 통일)
+# ==========================================
+class PlannerProposal(TypedDict, total=False):
+    """아침 브리핑 — 일정 플래너(채린)"""
+    date: str
+    user_requested_rest: bool
+    condition_score: Dict[str, Any]
+    schedule_blocks: List[Dict[str, Any]]   # id, start_time, end_time, duration_minutes, title, task_type, status, location
+    changed_items: List[Dict[str, Any]]     # id, title, change_type, before, after, reason
+    postponed_tasks: List[Dict[str, Any]]   # id, title, original_deadline, new_scheduled_date, reason
+    unresolvable_warnings: List[str]
+    remaining_violations: List[str]
+
+class PurchaseProposal(TypedDict, total=False):
+    """구매 상담 — 구매 어드바이저(서경)"""
+    decision: Literal["recommend", "hold"]
+    item: str
+    category: str
+    criteria: List[str]                     # 구매 이력의 만족·후회 이유에서 도출한 기준
+    candidates: List[Dict[str, Any]]        # 네이버 쇼핑 후보 (name, price, rating, review_summary, link)
+    impulse_signals: List[str]              # 충동 신호 (심야, 수면 부족, 주간 지출 초과, 동일 카테고리 후회)
+    evidence: List[str]                     # 근거로 쓴 이력·데이터
+    revisit_at: Optional[str]               # 보류 시 재검토 날짜 YYYY-MM-DD (PD1)
+
+class RecallResult(TypedDict, total=False):
+    """저녁 회고 — 회상 인터뷰(서경)"""
+    purchase_id: int                        # purchase_history.id
+    recall_stage: Literal["first_run", "1_week", "1_month"]
+    questions: List[str]                    # 한 번에 2개 이하 (RC1)
+    satisfaction: Optional[int]             # 1~5, 답하지 않으면 None
+    reason_tags: List[str]
+    comment: Optional[str]
+    skipped: bool
+
 class AgentState(TypedDict):
     # LangGraph 권장 패턴: 대화 메시지 누적
     messages: Annotated[List[BaseMessage], operator.add]
@@ -33,7 +70,7 @@ class AgentState(TypedDict):
     # 3. 컨디션 분석 결과 (시간대별 에너지 점수 등)
     condition_score: Dict[str, Any]
     
-    # 4. 각 역할 에이전트(일정, 구매)가 생성한 제안 초안 (Dict 구조로 유연성 확보)
+    # 4. 역할 에이전트가 생성한 제안 초안. 시나리오별 모양: PlannerProposal / PurchaseProposal / RecallResult (위 정의)
     draft_proposal: Dict[str, Any]
     
     # 5. Critic(검증) 에이전트 피드백 및 재작업 루프 관리
