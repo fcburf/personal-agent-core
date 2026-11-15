@@ -8,3 +8,10 @@ langchain-google-genai>=2.0.0
 # 3. 환경 변수(.env) 및 유틸리티
 python-dotenv>=1.0.0
 pydantic>=2.0.0
+# 4. Google Calendar API 연동 (지인 님 calendar_service 등)
+google-api-python-client>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.2.0
+
+# 5. 시간대 데이터 (Windows에서 ZoneInfo("Asia/Seoul") 사용 시 필수)
+tzdata
