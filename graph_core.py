@@ -190,7 +190,7 @@ def critic_node(state: AgentState):
             "violated_rules": ["A1_마감_누락"],
             "severity": "high",
             "feedback": "일정 마감 기한이 누락되었습니다. 다시 배치하세요.",
-            "target_agent": "planner",
+            "target_agent": AGENT_BY_REQUEST.get(state.get("request_type")),
         }
     else:
         critic_res = {
@@ -335,16 +335,19 @@ AGENT_BY_REQUEST = {
 
 def route_after_critic(state: AgentState) -> str:
     """판정은 critic_node가 critic_verdict로 이미 내렸으므로, 라우터는 그 값만 보고 길을 고른다.
-    - "rework" → target_agent(없으면 request_type 기준 담당 에이전트)로 재작업
+    - "rework" → 현재 시나리오의 담당 에이전트로 재작업
     - 그 외("pass" / "warn" / "keep_original") → 커뮤니케이터 (문구는 커뮤니케이터가 verdict로 분기)
+    시나리오마다 역할 에이전트는 하나뿐이므로, Critic(LLM)이 다른 시나리오의 에이전트를
+    target_agent로 잘못 지정해도 따르지 않는다 (예: 구매 상담 반려인데 "planner").
     """
     if state.get("critic_verdict") != "rework":
         return "communicator"
 
+    owner = AGENT_BY_REQUEST.get(state.get("request_type"))
     target_agent = (state.get("critic_result") or {}).get("target_agent")
-    if target_agent in AGENT_BY_REQUEST.values():
-        return target_agent
-    return AGENT_BY_REQUEST.get(state.get("request_type"), "communicator")
+    if owner and target_agent and target_agent != owner:
+        print(f" -> [경고] Critic target_agent={target_agent}가 시나리오 담당({owner})과 달라 {owner}로 보냄")
+    return owner or "communicator"
 
 def is_after_rejection(state: AgentState) -> bool:
     return (state.get("user_decision") or {}).get("status") == "rejected"
