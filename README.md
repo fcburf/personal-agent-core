@@ -19,9 +19,9 @@
 flowchart TD
     %% 메인 흐름(실선)을 먼저 선언: Mermaid는 선언 순서·화살표 방향으로 층을 배치함
     Start([시작]) --> Supervisor["1. Supervisor<br/>(요청 판별)"]
-    Supervisor -->|브리핑 / 구매 / 회고| Context["2. 맥락 수집<br/>(API 병렬 호출)"]
+    Supervisor -->|여행 계획 / 브리핑 / 구매 / 회고| Context["2. 맥락 수집<br/>(API 병렬 호출)"]
     Context --> Condition["3. 컨디션 분석<br/>(시간대별 에너지 점수)"]
-    Condition -->|아침 브리핑| Planner["4-1. 일정 플래너"]
+    Condition -->|여행 계획 / 아침 브리핑| Planner["4-1. 일정 플래너"]
     Condition -->|구매 상담| Advisor["4-2. 구매 어드바이저"]
     Condition -->|저녁 회고| Interview["4-3. 회상 인터뷰"]
     Planner --> Critic["5. Critic 검증<br/>(대형 LLM)"]
@@ -91,7 +91,7 @@ personal-agent-core/
 | 필드명 | 타입 | 담당 에이전트 | 설명 및 예시 |
 |---|---|---|---|
 | `messages` | `Annotated[List[BaseMessage], operator.add]` | 공통 | 대화 히스토리 누적 관리 |
-| `request_type` | `str` | Supervisor | 요청 유형 (`morning_briefing`, `purchase_consultation`, `retrospective`, `general`) |
+| `request_type` | `str` | Supervisor | 요청 유형 (`trip_planning`, `morning_briefing`, `purchase_consultation`, `retrospective`, `general`) — 담당 에이전트는 `graph_core.AGENT_BY_REQUEST` 표 하나로 관리 |
 | `context_data` | `Dict[str, Any]` | 맥락 수집 | 외부 실제 데이터. 형식은 아래 **④ context_data 형식** (`calendar_events`, `tasks`, `biometrics`, `weather`, `spending` 등) |
 | `condition_score` | `Dict[str, Any]` | 컨디션 분석 | 시간대별 에너지 점수 (`{"morning": 80, "afternoon": 40}`) |
 | `draft_proposal` | `Dict[str, Any]` | 플래너 / 구매 어드바이저 / 회상 인터뷰 | 역할 에이전트의 제안 초안. **칸 이름은 하나로 통일**, 내용 모양만 시나리오별로 다름 (아래 **⑤ draft_proposal 형식**) |
@@ -137,6 +137,7 @@ class RejectedEntry(TypedDict, total=False):
 ```
 > `user_approval` 노드가 거절·수정 요청을 받을 때마다 한 건씩 추가합니다. Critic의 D6 검사는 목록 전체를 참고합니다.
 > 수정 요청(modify)의 `feedback`은 `messages`에도 사용자 메시지로 추가되어, 플래너가 `get_last_user_message(state)`로 읽습니다.
+> **구매 상담 거절 이력 (11/27 서경 님과 확정 예정 초안)**: `changes = {decision, item, category, recommended}` + `reject_reason_tags`(화면에서 선택: 가격/수량/이미 있음/필요 없음/브랜드) + `purchase_context`(구매하려던 이유·상황). 화면은 거절 시 `user_decision`에 `reason_tags`를 함께 넣어 주세요.
 
 #### ④ `context_data` 형식 (맥락 수집 → 컨디션 분석·역할 에이전트·Critic)
 예시 데이터는 `graph_core.py`의 `build_dummy_context()`에 있습니다. 실제 맥락 수집도 같은 모양으로 반환합니다.
@@ -144,21 +145,35 @@ class RejectedEntry(TypedDict, total=False):
 | 키 | 담당 | 내용 |
 |---|---|---|
 | `today` | 지인 | 기준 날짜 `YYYY-MM-DD` |
+| `trip` | 지인 | **여행 정보** (여행 전 입력 폼 → `trips` 테이블): `{trip_id, destination, start_date, end_date, accommodation, budget, currency, wishlist: {places, foods, activities}}` |
 | `active_hours` | 지인 | 활동 시간대 `"08:00-23:00"` (D4) |
-| `calendar_events` | 지인 | `[{id, title, start_time, end_time(HH:MM), is_fixed, is_adjustable, has_attendees, location}]` — 고정 일정은 기본 `is_adjustable=False`, 장소 없으면 `""` |
+| `calendar_events` | 지인 | **오늘 일정만** `[{id, title, start_time, end_time(HH:MM), is_fixed, is_adjustable, has_attendees, location, walking_level}]` — `walking_level`: 많음/보통/적음. 고정 일정은 기본 `is_adjustable=False`, 장소 없으면 `""` ⚠️ 여러 날 일정을 넣으면 플래너가 '고정 일정 삭제(A3-1)'로 오인 |
+| `trip_schedule` | 지인 | **여행 전체 날짜별 일정** `[{date, events: [{id, title, start_time, end_time, walking_level}]}]` — 구매 상담이 '남은 일정'을 읽는 곳 |
 | `tasks` | 지인 | `[{id, title, deadline(YYYY-MM-DD HH:MM), is_collaborative, estimated_minutes}]` |
-| `biometrics` | 지인 | 수면·피로도 (`sleep_score`, `sleep_hours`, `fatigue_level` 등) |
-| `weather` | 지인 | 날씨 (없으면 키 생략 → B1: 없는 날씨를 근거로 쓰면 안 됨) |
-| `spending` | 예정 | `{records: [{item_name, category, price, purchase_date, data_source}], weekly_total, monthly_total, monthly_budget(미설정이면 null), by_category, data_quality("ok" \| "insufficient")}` |
+| `biometrics` | 지인 | `{recent: [최근 3일 {date, sleep_type(score/manual/all_nighter), sleep_score, sleep_hours, fatigue_level(1~5)}], steps_today}` |
+| `weather` | 지인 | 날짜별 `[{date, condition, temp_min_c, temp_max_c}]` (없으면 키 생략 → B1: 없는 날씨를 근거로 쓰면 안 됨) |
+| `spending` | 예정 | `{records: [{item_name, category, price, purchase_date, data_source}], weekly_total, monthly_total, monthly_budget(미설정이면 null), by_category, trip_spent(여행 예산 대비 사용액), data_quality("ok" \| "insufficient")}` |
+| `products` | 예정·서경 | 구매 상담 비교 상품 `[{id, name, price, currency, unit_count, source, source_url}]` — 실서비스는 구매 에이전트가 Google 검색(grounding)으로 채우고 출처를 `source_url`에 |
 
 #### ⑤ `draft_proposal` 형식 (역할 에이전트 → Critic → 커뮤니케이터 → 승인 → 실행)
 Critic·승인·`rejected_history`가 시나리오와 상관없이 같은 칸을 읽도록 **칸은 `draft_proposal` 하나**입니다. 타입 정의는 `state.py`.
 
 | 시나리오 | 작성 | 타입 | 주요 필드 |
 |---|---|---|---|
+| 여행 전 일정 정리 | 일정 플래너 (채린) | `TripPlanProposal` | `trip_id`, `days: [{date, schedule_blocks(+walking_level)}]`, `heavy_walking_dates`, `unresolvable_warnings` |
 | 아침 브리핑 | 일정 플래너 (채린) | `PlannerProposal` | `schedule_blocks`, `changed_items`, `postponed_tasks`, `unresolvable_warnings`, `remaining_violations`, `user_requested_rest` |
-| 구매 상담 | 구매 어드바이저 (서경) | `PurchaseProposal` | `decision`(recommend/hold), `item`, `category`, `criteria`, `candidates`, `impulse_signals`, `evidence`, `revisit_at` |
+| 구매 상담 | 구매 어드바이저 (서경) | `PurchaseProposal` | `decision`(recommend/hold), `item`, `category`, **`recommended{name, price, currency, quantity}`**, **`quantity_basis`**(수량 근거), **`purchase_context`**(구매하려던 이유·상황), `criteria`, `candidates`, `impulse_signals`, `evidence`(검색 출처 포함), `revisit_at` |
 | 저녁 회고 | 회상 인터뷰 (서경) | `RecallResult` | `purchase_id`, `recall_stage`(first_run/1_week/1_month), `questions`, `satisfaction`, `reason_tags`, `comment`, `skipped` |
+
+---
+
+## 🧪 테스트 (LLM 호출 없음, 1~2초)
+통합 전·PR 전에 실행해 주세요. Gemini를 부르지 않고 가짜 플래너로 그래프 경로만 검사합니다.
+```bash
+python tests/test_graph.py            # 시나리오 경로, Critic 판정, 승인·거절·수정, 거절 이력 형식, context_data 키
+python tests/test_planner_wiring.py   # 플래너 연결 (사용자 메시지, Critic 피드백 전달, 내부 반복 상한)
+python tests/test_db.py               # 장기 메모리 DB 스키마 (임시 DB 사용)
+```
 
 ---
 
@@ -197,9 +212,10 @@ python db_init.py
 
 | 테이블 | 작성 | 읽음 | 비고 |
 |---|---|---|---|
+| `trips` | 여행 전 입력 폼 (지인) | 맥락 수집(trip) | 목적지·기간·숙소·예산·wishlist(JSON) |
 | `purchase_history` | 구매·지출 데이터 (예정) | 구매 에이전트, 맥락 수집(spending) | 만족도 칸 없음 → `purchase_feedback`으로 분리 |
 | `purchase_feedback` | 회상 인터뷰 (서경) | 구매 기준 도출, Critic | 한 구매에 1주·1개월 회상 각각 한 행 |
-| `purchase_decisions` | 실행 에이전트 (구매 승인 후) | 구매 재검토, Critic(PD2) | 보류면 `revisit_at` |
+| `purchase_decisions` | 실행 에이전트 (구매 승인·거절 후) | 구매 재검토, Critic(PD2) | `recommended`, `user_response`(approved/rejected/modify), `reject_reason_tags`, `purchase_context`, 보류면 `revisit_at` |
 | `user_patterns` | 회고·컨디션 분석 | 컨디션 분석, 구매 에이전트 | `confirmed_count`로 '확인된 패턴' 관리 (C3·PC3·RA2) |
 | `tasks`, `task_work_schedules` | 일정 연동 (지인) | 맥락 수집(tasks) | 지인 님 스키마 그대로 + `is_collaborative` 추가 |
 | `daily_conditions` | 일정·생체 연동 (지인) | 맥락 수집(biometrics) | 지인 님 스키마 그대로 |

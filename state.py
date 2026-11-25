@@ -11,11 +11,14 @@ class CriticResult(TypedDict, total=False):
 
 class RejectedEntry(TypedDict, total=False):
     status: str                    # 'rejected' | 'modify'
-    changes: Any                   # 거절·수정 대상이 된 변경 내용 (draft_proposal의 changes)
+    changes: Any                   # 같은 추천인지 비교할 핵심 (graph_core.extract_changes)
+    reject_reason_tags: List[str]  # [구매] 가격 / 수량 / 이미 있음 / 필요 없음 / 브랜드 등
+    purchase_context: Optional[str]  # [구매] 구매하려던 이유·상황 한 줄
     feedback: Optional[str]        # 사용자 피드백
     decided_at: Optional[str]      # 결정 시각 (ISO 8601)
 
 class UserDecision(TypedDict, total=False):
+    # reason_tags: 거절 이유 태그 (화면에서 선택, 구매 상담) 예: ["가격", "수량"]
     status: str                    # 승인 상태 ('approved' | 'rejected' | 'modify')
     feedback: Optional[str]        # 거절 또는 대안 요청 시 사용자 의견/피드백
     decided_at: Optional[str]      # 사용자 결정 시각 (ISO 8601 타임스탬프)
@@ -36,11 +39,21 @@ class PlannerProposal(TypedDict, total=False):
     unresolvable_warnings: List[str]
     remaining_violations: List[str]
 
+class TripPlanProposal(TypedDict, total=False):
+    """여행 전 일정 정리 — 일정 플래너(채린) 여행 전체 모드"""
+    trip_id: str
+    days: List[Dict[str, Any]]              # [{date, schedule_blocks: [{id, title, start_time, end_time, location, walking_level}]}]
+    heavy_walking_dates: List[str]          # 도보 '많음' 날짜 → 구매 수량 판단 근거
+    unresolvable_warnings: List[str]
+
 class PurchaseProposal(TypedDict, total=False):
     """구매 상담 — 구매 어드바이저(서경)"""
     decision: Literal["recommend", "hold"]
     item: str
     category: str
+    recommended: Optional[Dict[str, Any]]   # 실제로 권한 제품 {name, price, currency, quantity} (보류면 None)
+    quantity_basis: Optional[str]           # 수량 계산 근거 (예: "남은 일정 중 도보 많음 2일")
+    purchase_context: Optional[str]         # 구매하려던 이유·상황 한 줄 (예: "USJ에서 2만 보 걸어 다리 통증")
     criteria: List[str]                     # 구매 이력의 만족·후회 이유에서 도출한 기준
     candidates: List[Dict[str, Any]]        # 네이버 쇼핑 후보 (name, price, rating, review_summary, link)
     impulse_signals: List[str]              # 충동 신호 (심야, 수면 부족, 주간 지출 초과, 동일 카테고리 후회)
@@ -70,7 +83,7 @@ class AgentState(TypedDict):
     # 3. 컨디션 분석 결과 (시간대별 에너지 점수 등)
     condition_score: Dict[str, Any]
     
-    # 4. 역할 에이전트가 생성한 제안 초안. 시나리오별 모양: PlannerProposal / PurchaseProposal / RecallResult (위 정의)
+    # 4. 역할 에이전트가 생성한 제안 초안. 시나리오별 모양: TripPlanProposal / PlannerProposal / PurchaseProposal / RecallResult (위 정의)
     draft_proposal: Dict[str, Any]
     
     # 5. Critic(검증) 에이전트 피드백 및 재작업 루프 관리

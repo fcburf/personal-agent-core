@@ -5,6 +5,7 @@
 
 | 테이블                | 쓰는 쪽 (작성)            | 읽는 쪽                         |
 |----------------------|--------------------------|--------------------------------|
+| trips                | 여행 전 입력 폼 (지인)       | 맥락 수집(trip)                    |
 | purchase_history     | 구매·지출 데이터 (예정)     | 구매 에이전트(서경), 맥락 수집(spending) |
 | purchase_feedback    | 회상 인터뷰 (서경)          | 구매 에이전트 기준 도출, Critic       |
 | purchase_decisions   | 실행 에이전트 (구매 승인 후) | 구매 에이전트 재검토, Critic(PD2)     |
@@ -25,6 +26,20 @@ def get_connection():
 
 
 SCHEMA = [
+    # ---------- 여행 (지인) — 여행 전 입력 폼 ----------
+    """
+    CREATE TABLE IF NOT EXISTS trips (
+        trip_id TEXT PRIMARY KEY,
+        destination TEXT NOT NULL,
+        start_date TEXT NOT NULL,           -- YYYY-MM-DD
+        end_date TEXT NOT NULL,
+        accommodation TEXT,
+        budget INTEGER,
+        currency TEXT DEFAULT 'KRW',
+        wishlist TEXT,                      -- JSON 문자열 {places, foods, activities}
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
     # ---------- 구매 (예정 → 서경) ----------
     # 구매 이력: 데이터 연동이 저장 (Gmail / 캡처 / 수동 입력). 만족도는 purchase_feedback에 따로 저장
     """
@@ -56,10 +71,15 @@ SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS purchase_decisions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trip_id TEXT,                       -- 여행 중 상담이면 trips.trip_id
         item TEXT NOT NULL,
         category TEXT,
         decision TEXT CHECK(decision IN ('recommend', 'hold')),
-        evidence TEXT,                      -- JSON 문자열
+        recommended TEXT,                   -- JSON {name, price, currency, quantity}
+        user_response TEXT CHECK(user_response IN ('approved', 'rejected', 'modify')),
+        reject_reason_tags TEXT,            -- JSON 배열 (가격/수량/이미 있음/필요 없음/브랜드)
+        purchase_context TEXT,              -- 구매하려던 이유·상황 한 줄
+        evidence TEXT,                      -- JSON 문자열 (검색 출처 등)
         revisit_at TEXT,                    -- 보류 재검토 날짜 YYYY-MM-DD
         decided_at TEXT DEFAULT CURRENT_TIMESTAMP
     )

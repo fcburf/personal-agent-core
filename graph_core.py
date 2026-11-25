@@ -14,21 +14,25 @@ from planner_nodes import condition_analyzer_node, planner_agent_node
 # ==========================================
 class SupervisorDecision(BaseModel):
     request_type: Literal[
-        "morning_briefing", 
-        "purchase_consultation", 
-        "retrospective", 
+        "trip_planning",
+        "morning_briefing",
+        "purchase_consultation",
+        "retrospective",
         "general"
     ] = Field(
-        description="사용자 입력의 의도를 4가지 유형 중 하나로 정확히 분류"
+        description="사용자 입력의 의도를 5가지 유형 중 하나로 정확히 분류"
     )
     reasoning: str = Field(
         description="해당 유형으로 분류한 1줄 이유 (디버깅/모니터링용)"
     )
 
 SUPERVISOR_PROMPT = """당신은 개인 비서 시스템의 요청 라우터(Supervisor)입니다.
-사용자의 최근 메시지를 분석하여 다음 4가지 유형 중 가장 적합한 하나로 분류하세요.
+사용자의 최근 메시지를 분석하여 다음 5가지 유형 중 가장 적합한 하나로 분류하세요.
 
 [분류 기준]
+0. trip_planning (여행 전 일정 정리):
+   - 여행 전에 입력한 가고 싶은 곳·먹고 싶은 것을 바탕으로 여행 전체 일정을 짜 달라는 요청
+   - 예: "오사카 여행 일정 짜줘", "여행 계획 정리해줘", "3일 동안 어디 갈지 정해줘"
 1. morning_briefing (아침 브리핑/일정):
    - 오늘 하루 일정 확인, 스케줄 조정, 컨디션/수면/날씨에 따른 일정 최적화 관련
    - 예: "오늘 일정 어때?", "피곤한데 스케줄 좀 조절해줘", "오늘 하루 브리핑해줘"
@@ -44,6 +48,7 @@ SUPERVISOR_PROMPT = """당신은 개인 비서 시스템의 요청 라우터(Sup
 
 [우선순위 규칙]
 - 만약 일정과 구매가 동시에 언급되면, 하루 운영을 위해 'morning_briefing'을 우선합니다.
+- 여행 '전체' 일정을 짜 달라면 trip_planning, '오늘' 일정이면 morning_briefing입니다.
 """
 
 # ==========================================
@@ -87,45 +92,88 @@ def supervisor_node(state: AgentState):
         return {"request_type": "general", **NEW_REQUEST_RESET}
 
 def build_dummy_context(today=None) -> dict:
-    """[임시 더미] 맥락 수집 노드가 실제로 만들 context_data와 같은 모양의 예시 데이터.
-    TODO(지인): 실제 API(Google Calendar·Tasks, 날씨, 생체 데이터) 결과를 이 형식으로 채워 반환.
-    키 이름·필드는 planner_nodes(채린)와 Critic 규칙(원형)이 그대로 읽으므로 바꾸면 README와 함께 공지."""
+    """[형식 예시] 맥락 수집 노드가 반환할 context_data 모양 (여행 시나리오, 11/26 확정).
+    실제 데모 데이터(오사카 일정·컨디션·날씨)는 지인 님, 구매 이력·예산·상품은 예정 님이 이 형식으로 채움.
+    키 이름·필드는 플래너(채린)·구매 에이전트(서경)·Critic(원형)이 그대로 읽으므로 바꾸면 README와 함께 공지."""
     today = today or datetime.now().date()
     d = lambda days: (today + timedelta(days=days)).strftime("%Y-%m-%d")
     return {
         "today": d(0),                       # 기준 날짜 YYYY-MM-DD
         "active_hours": "08:00-23:00",       # 사용자 활동 시간대 (D4)
-        "calendar_events": [                 # 고정 일정 (A3, E3, D3)
-            {"id": "evt_001", "title": "캡스톤 팀 회의", "start_time": "10:00", "end_time": "11:00",
-             "is_fixed": True, "is_adjustable": False, "has_attendees": True, "location": "공학관 302호"},
-            {"id": "evt_002", "title": "인공지능 수업", "start_time": "14:00", "end_time": "15:30",
-             "is_fixed": True, "is_adjustable": False, "has_attendees": True, "location": "공학관 101호"},
-            {"id": "evt_003", "title": "개인 운동", "start_time": "19:00", "end_time": "20:00",
-             "is_fixed": True, "is_adjustable": True, "has_attendees": False, "location": "학교 체육관"},
-        ],
-        "tasks": [                           # 할 일 (A1, A2, A5, A6, E1, E2)
-            {"id": "task_001", "title": "데이터베이스 과제 제출", "deadline": f"{d(0)} 18:00",
-             "is_collaborative": False, "estimated_minutes": 120},
-            {"id": "task_002", "title": "팀 발표 슬라이드 작성", "deadline": f"{d(1)} 23:59",
-             "is_collaborative": True, "estimated_minutes": 90},
-            {"id": "task_003", "title": "논문 읽기", "deadline": f"{d(5)} 23:59",
-             "is_collaborative": False, "estimated_minutes": 60},
-        ],
-        "biometrics": {"sleep_hours": 5.5, "sleep_score": 60, "steps_yesterday": 4200},  # 컨디션 분석
-        "weather": {"condition": "비", "temperature_c": 12},
-        "spending": {                        # 구매·지출 (예정 님 spending_builder). 구매 에이전트·Critic(PA1·PA2)이 읽음
-            "records": [
-                {"item_name": "자연 담은 스틱꿀", "category": "식품", "price": 15000,
-                 "purchase_date": d(-3), "data_source": "capture"},
-                {"item_name": "무선 마우스", "category": "전자기기", "price": 69000,
-                 "purchase_date": d(-1), "data_source": "gmail"},
-            ],
-            "weekly_total": 84000,           # 최근 7일 합계
-            "monthly_total": 213000,         # 이번 달 합계 (PA1 예산 검사)
-            "monthly_budget": None,          # 사용자가 정한 월 예산, 미설정이면 None → PA1 검사 생략
-            "by_category": {"식품": 15000, "전자기기": 69000},
-            "data_quality": "ok",            # 건수가 적으면 "insufficient" → 구매 에이전트가 이력을 지어내지 않게 함
+
+        # 여행 정보 (여행 전 입력 폼 → trips 테이블) — 지인
+        "trip": {
+            "trip_id": "trip_osaka",
+            "destination": "일본 오사카",
+            "start_date": d(-1), "end_date": d(1),          # 오늘 = 여행 2일차
+            "accommodation": "난바역 근처 호텔",
+            "budget": 60000, "currency": "JPY",              # 여행 예산 (구매 상담·PA1)
+            "wishlist": {
+                "places": ["도톤보리", "오사카성", "유니버설 스튜디오 재팬"],
+                "foods": ["타코야키", "오코노미야키"],
+                "activities": ["쿠로몬 시장 구경"],
+            },
         },
+
+        # 오늘 일정만 (플래너 A3·D3 검사 대상). walking_level = 많음/보통/적음 — 지인
+        "calendar_events": [
+            {"id": "evt_d2_1", "title": "유니버설 스튜디오 재팬 (입장 예약)", "start_time": "09:00", "end_time": "17:00",
+             "is_fixed": True, "is_adjustable": False, "has_attendees": False,
+             "location": "유니버설 스튜디오 재팬", "walking_level": "많음"},
+            {"id": "evt_d2_2", "title": "도톤보리 저녁", "start_time": "19:00", "end_time": "20:30",
+             "is_fixed": True, "is_adjustable": True, "has_attendees": False,
+             "location": "도톤보리", "walking_level": "보통"},
+        ],
+        "tasks": [],                         # 여행 중에는 보통 비어 있음 (형식은 기존과 동일)
+
+        # 여행 전체 날짜별 일정 (구매 상담이 '남은 일정'을 읽는 곳) — 지인
+        "trip_schedule": [
+            {"date": d(-1), "events": [
+                {"id": "evt_d1_1", "title": "오사카성", "start_time": "13:00", "end_time": "16:00", "walking_level": "많음"}]},
+            {"date": d(0), "events": [
+                {"id": "evt_d2_1", "title": "유니버설 스튜디오 재팬", "start_time": "09:00", "end_time": "17:00", "walking_level": "많음"},
+                {"id": "evt_d2_2", "title": "도톤보리 저녁", "start_time": "19:00", "end_time": "20:30", "walking_level": "보통"}]},
+            {"date": d(1), "events": [
+                {"id": "evt_d3_1", "title": "쿠로몬 시장", "start_time": "10:00", "end_time": "13:00", "walking_level": "많음"}]},
+        ],
+
+        # 최근 3일 수면·피로도 + 오늘 걸음 수 (컨디션 분석, 구매 수량 판단) — 지인
+        "biometrics": {
+            "recent": [
+                {"date": d(-2), "sleep_type": "score", "sleep_score": 78, "sleep_hours": 7.0, "fatigue_level": 2},
+                {"date": d(-1), "sleep_type": "manual", "sleep_score": None, "sleep_hours": 5.0, "fatigue_level": 4},
+                {"date": d(0),  "sleep_type": "manual", "sleep_score": None, "sleep_hours": 4.0, "fatigue_level": 4},
+            ],
+            "steps_today": 21000,
+        },
+
+        # 날짜별 날씨 (없으면 키 생략 → B1) — 지인
+        "weather": [
+            {"date": d(0), "condition": "맑음", "temp_min_c": 8, "temp_max_c": 15},
+            {"date": d(1), "condition": "비", "temp_min_c": 9, "temp_max_c": 13},
+        ],
+
+        # 구매·지출 (예정 님 spending_builder). 여행 중 사용액 포함
+        "spending": {
+            "records": [
+                {"item_name": "타코야키", "category": "식품", "price": 800, "currency": "JPY",
+                 "purchase_date": d(-1), "data_source": "manual"},
+            ],
+            "weekly_total": 84000,
+            "monthly_total": 213000,
+            "monthly_budget": None,          # 미설정이면 None → PA1 검사 생략
+            "trip_spent": 12800,             # 여행 예산 대비 사용액 (trip.currency 기준)
+            "by_category": {"식품": 800},
+            "data_quality": "ok",
+        },
+
+        # 구매 상담 비교 상품 (실서비스는 구매 에이전트가 Google 검색으로 채움, 개발용 더미) — 예정·서경
+        "products": [
+            {"id": "A", "name": "휴족시간 18매입", "price": 932, "currency": "JPY", "unit_count": 18,
+             "source": "dummy", "source_url": None},
+            {"id": "B", "name": "샤론파스 40매입", "price": 1180, "currency": "JPY", "unit_count": 40,
+             "source": "dummy", "source_url": None},
+        ],
     }
 
 def context_collector_node(state: AgentState):
@@ -135,14 +183,21 @@ def context_collector_node(state: AgentState):
 def purchase_advisor_node(state: AgentState):
     """[임시 더미] TODO(서경): 실제 구매 어드바이저로 교체. 출력 형식은 state.PurchaseProposal"""
     print("[구매 어드바이저] 구매 추천/보류 초안 작성 중... (현재 더미)")
+    # 오사카 데모 예시: 남은 일정 중 도보 '많음'인 날 수로 수량 판단, 여행 예산 내에서 저렴한 쪽
     return {"draft_proposal": {
-        "decision": "hold",
-        "item": "기계식 키보드",
-        "category": "전자기기",
-        "criteria": ["타건감", "소음"],
-        "candidates": [],
-        "impulse_signals": ["주간 지출 초과"],
-        "evidence": ["이번 주 지출 84,000원 (주간 평균 대비 높음)"],
+        "decision": "recommend",
+        "item": "다리 피로 회복 패치",
+        "category": "건강·위생",
+        "purchase_context": "유니버설 스튜디오에서 약 2만 보를 걸어 다리 통증",
+        "criteria": ["남은 일정 도보량", "여행 예산"],
+        "candidates": [
+            {"id": "A", "name": "휴족시간 18매입", "price": 932, "currency": "JPY"},
+            {"id": "B", "name": "샤론파스 40매입", "price": 1180, "currency": "JPY"},
+        ],
+        "recommended": {"name": "휴족시간 18매입", "price": 932, "currency": "JPY", "quantity": 1},
+        "quantity_basis": "남은 일정 중 도보 '많음' 1일 + 오늘 밤 → 18매 1상자로 충분",
+        "impulse_signals": [],
+        "evidence": ["trip_schedule: 내일 쿠로몬 시장(도보 많음)", "trip.budget 60,000엔 중 12,800엔 사용"],
         "revisit_at": None,
     }}
 
@@ -271,6 +326,11 @@ def user_approval_node(state: AgentState):
         "feedback": decision.get("feedback", ""),
         "decided_at": decision.get("decided_at") or datetime.now().isoformat(timespec="seconds"),
     }
+    # 구매 상담 전용: 거절 이유 태그(화면에서 선택) + 구매하려던 이유·상황 (같은 추천 판단, 다음 상담 참고)
+    if decision.get("reason_tags"):
+        entry["reject_reason_tags"] = decision["reason_tags"]
+    if proposal.get("purchase_context"):
+        entry["purchase_context"] = proposal["purchase_context"]
     update = {"rejected_history": [entry]}  # operator.add 리듀서 → 기존 이력 뒤에 추가
     if status == "modify":
         # 사용자 요청으로 새 계획을 짜는 것이므로 재작업 기회를 다시 2회 부여
@@ -282,13 +342,25 @@ def user_approval_node(state: AgentState):
     return update
 
 def extract_changes(proposal: dict):
-    """거절·수정 이력(D6 검사용)에 남길 '바뀐 내용'만 추린다.
-    일정 플래너 형식: changed_items + postponed_tasks / 그 외: changes 칸, 없으면 제안 전체."""
+    """거절·수정 이력(D6·PD2 검사용)에 남길 '같은 추천인지 비교할 핵심'만 추린다.
+    - 아침 브리핑(PlannerProposal): changed_items + postponed_tasks (원본 일정 id로 비교)
+    - 여행 전체 일정(TripPlanProposal): 날짜별 블록 id·제목·시간
+    - 구매 상담(PurchaseProposal): 품목·카테고리·결정·실제 권한 제품(이름·가격·통화·수량)
+    - 그 외: changes 칸, 없으면 제안 전체"""
     if "changed_items" in proposal or "postponed_tasks" in proposal:
         return {
             "changed_items": proposal.get("changed_items", []),
             "postponed_tasks": proposal.get("postponed_tasks", []),
         }
+    if "days" in proposal:
+        return {"days": [
+            {"date": day.get("date"),
+             "blocks": [{k: b.get(k) for k in ("id", "title", "start_time", "end_time")}
+                        for b in day.get("schedule_blocks", [])]}
+            for day in proposal.get("days", [])
+        ]}
+    if "decision" in proposal and "item" in proposal:
+        return {k: proposal.get(k) for k in ("decision", "item", "category", "recommended")}
     return proposal.get("changes", proposal)
 
 def action_executor_node(state: AgentState):
@@ -297,8 +369,11 @@ def action_executor_node(state: AgentState):
     proposal = state.get("draft_proposal", {})
     print(f"[실행 에이전트] 사용자 승인 확인! 외부 시스템 반영 중... (요청: {req_type})")
     
-    if req_type == "morning_briefing":
-        # TODO: 일정/데이터 연동 팀원의 Google Calendar API 쓰기 함수 호출
+    if req_type in ("morning_briefing", "trip_planning"):
+        # TODO(리드, 11/29): 지인 님 calendar_service.add_event / move_event 호출
+        #   trip_planning: 여행 전체 일정(days)을 날짜별로 캘린더에 기록
+        #   morning_briefing: 오늘 바뀐 일정만 반영
+        # → 이후 구매 상담 때 맥락 수집이 캘린더에서 남은 일정을 다시 읽음 (에이전트 간 정보 전달)
         print(f" -> [Calendar API] 구글 캘린더 일정 반영 완료: {proposal}")
     elif req_type in ["purchase_consultation", "retrospective"]:
         # TODO: 장기 메모리 DB(long_term_memory.db) 저장 함수 호출
@@ -317,17 +392,11 @@ def route_after_supervisor(state: AgentState) -> str:
     return "context_collector"
 
 def route_after_context(state: AgentState) -> str:
-    """Supervisor가 판별한 request_type에 따라 담당 에이전트로 이동"""
-    req_type = state.get("request_type")
-    if req_type == "morning_briefing":
-        return "planner"
-    elif req_type == "purchase_consultation":
-        return "purchase_advisor"
-    elif req_type == "retrospective":
-        return "recall_interview"
-    return "communicator"
+    """Supervisor가 판별한 request_type에 따라 담당 에이전트로 이동 (AGENT_BY_REQUEST 표 하나로 관리)"""
+    return AGENT_BY_REQUEST.get(state.get("request_type"), "communicator")
 
 AGENT_BY_REQUEST = {
+    "trip_planning": "planner",          # 여행 전 전체 일정 정리 (플래너 여행 전체 모드)
     "morning_briefing": "planner",
     "purchase_consultation": "purchase_advisor",
     "retrospective": "recall_interview",
