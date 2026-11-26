@@ -244,3 +244,47 @@ def get_paused_task_schedules():
             ORDER BY p.paused_at DESC
         """).fetchall()
         return [dict(row) for row in rows]
+
+
+from db_init import get_connection
+
+
+def get_tasks_context() -> list[dict]:
+    """미완료 할 일 목록을 공용 DB에서 조회한다."""
+
+    conn = get_connection()
+
+    try:
+        conn.row_factory = __import__("sqlite3").Row
+
+        rows = conn.execute("""
+            SELECT
+                id,
+                title,
+                start_date,
+                deadline,
+                estimated_minutes,
+                completed,
+                calendar_event_id,
+                is_collaborative
+            FROM tasks
+            WHERE completed = 0
+            ORDER BY deadline ASC, id ASC
+        """).fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "start_date": row["start_date"],
+                "deadline": row["deadline"],
+                "estimated_minutes": row["estimated_minutes"],
+                "completed": bool(row["completed"]),
+                "calendar_event_id": row["calendar_event_id"],
+                "is_collaborative": bool(row["is_collaborative"]),
+            }
+            for row in rows
+        ]
+
+    finally:
+        conn.close()

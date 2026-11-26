@@ -1,14 +1,11 @@
 
 import sqlite3
-from pathlib import Path
 from datetime import date, datetime, timedelta
 
-BASE_DIR = Path(__file__).resolve().parent
-DB_FILE = BASE_DIR / "condition.db"
+from db_init import get_connection, DB_PATH
 
-
-def get_connection():
-    return sqlite3.connect(DB_FILE)
+# 기존 테스트 코드와의 호환성을 위한 별칭
+DB_FILE = DB_PATH
 
 
 def init_condition_db():
@@ -148,3 +145,29 @@ def get_recent_conditions(days=7):
         """, (start_date,)).fetchall()
 
     return [dict(row) for row in rows]
+
+
+def get_biometrics_context(days=7):
+    """최근 수면·피로도 기록을 에이전트 형식으로 변환한다."""
+    records = get_recent_conditions(days)
+    recent = []
+
+    for record in records:
+        sleep_minutes = record["sleep_minutes"]
+
+        recent.append({
+            "date": record["record_date"],
+            "sleep_type": record["sleep_type"],
+            "sleep_score": record["sleep_score"],
+            "sleep_hours": (
+                round(sleep_minutes / 60, 2)
+                if sleep_minutes is not None
+                else None
+            ),
+            "fatigue_level": record["fatigue_level"],
+        })
+
+    return {
+        "recent": recent,
+        "steps_today": None,
+    }
