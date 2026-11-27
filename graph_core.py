@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from state import AgentState
 from config import llm_small, llm_large
 from planner_nodes import condition_analyzer_node, planner_agent_node
+from purchase_nodes import purchase_advisor_node  # 구매 어드바이저 (서경)
 
 # ==========================================
 # [0] Supervisor 구조화 출력 스키마 및 프롬프트
@@ -179,27 +180,6 @@ def build_dummy_context(today=None) -> dict:
 def context_collector_node(state: AgentState):
     print("[맥락 수집] 외부 API 병렬 호출 중... (현재 더미 데이터)")
     return {"context_data": build_dummy_context()}
-
-def purchase_advisor_node(state: AgentState):
-    """[임시 더미] TODO(서경): 실제 구매 어드바이저로 교체. 출력 형식은 state.PurchaseProposal"""
-    print("[구매 어드바이저] 구매 추천/보류 초안 작성 중... (현재 더미)")
-    # 오사카 데모 예시: 남은 일정 중 도보 '많음'인 날 수로 수량 판단, 여행 예산 내에서 저렴한 쪽
-    return {"draft_proposal": {
-        "decision": "recommend",
-        "item": "다리 피로 회복 패치",
-        "category": "건강·위생",
-        "purchase_context": "유니버설 스튜디오에서 약 2만 보를 걸어 다리 통증",
-        "criteria": ["남은 일정 도보량", "여행 예산"],
-        "candidates": [
-            {"id": "A", "name": "휴족시간 18매입", "price": 932, "currency": "JPY"},
-            {"id": "B", "name": "샤론파스 40매입", "price": 1180, "currency": "JPY"},
-        ],
-        "recommended": {"name": "휴족시간 18매입", "price": 932, "currency": "JPY", "quantity": 1},
-        "quantity_basis": "남은 일정 중 도보 '많음' 1일 + 오늘 밤 → 18매 1상자로 충분",
-        "impulse_signals": [],
-        "evidence": ["trip_schedule: 내일 쿠로몬 시장(도보 많음)", "trip.budget 60,000엔 중 12,800엔 사용"],
-        "revisit_at": None,
-    }}
 
 def recall_interview_node(state: AgentState):
     """[임시 더미] TODO(서경): 실제 회상 인터뷰로 교체. 출력 형식은 state.RecallResult"""
