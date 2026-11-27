@@ -137,10 +137,14 @@ class RejectedEntry(TypedDict, total=False):
 ```
 > `user_approval` 노드가 거절·수정 요청을 받을 때마다 한 건씩 추가합니다. Critic의 D6 검사는 목록 전체를 참고합니다.
 > 수정 요청(modify)의 `feedback`은 `messages`에도 사용자 메시지로 추가되어, 플래너가 `get_last_user_message(state)`로 읽습니다.
-> **구매 상담 거절 이력 (11/27 서경 님과 확정 예정 초안)**: `changes = {decision, item, category, recommended}` + `reject_reason_tags`(화면에서 선택: 가격/수량/이미 있음/필요 없음/브랜드) + `purchase_context`(구매하려던 이유·상황). 화면은 거절 시 `user_decision`에 `reason_tags`를 함께 넣어 주세요.
+> **구매 상담 거절 이력 (11/27 확정, 서경 님 구현 반영)**: `changes = {decision, item, category, recommended}` + `reject_reason_tags`(화면에서 선택: 가격 / 수량 / 이미 있음 / 필요 없음 / 브랜드 / 기타) + `purchase_context`(구매하려던 이유·상황). 화면은 거절 시 `user_decision`에 `reason_tags`를 함께 넣어 주세요.
+> - 구매 어드바이저는 같은 카테고리에서 거절된 제품을 후보에서 빼고 거절 이유(가격 → 더 싼 후보, 수량 → 더 적은 매수)를 반영합니다 (`purchase_nodes.build_candidates`).
+> - Critic PD2는 '같은 카테고리 + 구매 이유·상황(purchase_context)이 비슷한데 거절한 추천을 다시 냄'을 LLM 해석으로 검사합니다 (Critic 판정 조건표 확정본).
 
 #### ④ `context_data` 형식 (맥락 수집 → 컨디션 분석·역할 에이전트·Critic)
 예시 데이터는 `graph_core.py`의 `build_dummy_context()`에 있습니다. 실제 맥락 수집도 같은 모양으로 반환합니다.
+
+> **맥락 수집 동작 (11/27)**: 지인 님 서비스(`trip_service`, `calendar_service`, `condition_service`, `weather_service`, `task_service`)에서 실제 데이터를 읽습니다. 소스 하나가 실패하면(구글 로그인 파일 없음, DB 미초기화 등) **그 항목만 예시 데이터로 대체**하고 계속 진행하며, `context_data["data_sources"]`에 항목별 `live` / `dummy(fallback)`, `source_errors`에 원인을 남깁니다. `.env`에 `CONTEXT_SOURCE=dummy`를 넣으면 예시 데이터만 씁니다 (테스트·오프라인 시연).
 
 | 키 | 담당 | 내용 |
 |---|---|---|
