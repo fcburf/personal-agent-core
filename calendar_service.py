@@ -229,3 +229,207 @@ def get_events_between(start, end):
             break
 
     return events
+
+
+def get_today_calendar_events(today=None):
+    """오늘의 Google Calendar 일정을 에이전트 형식으로 변환한다."""
+    if today is None:
+        today = datetime.now(KST).date()
+
+    start = datetime.combine(
+        today, datetime.min.time(), tzinfo=KST
+    )
+    end = start + timedelta(days=1)
+
+    raw_events = get_events_between(start, end)
+    calendar_events = []
+
+    for event in raw_events:
+        # 오늘 날짜와 겹치는 부분만 사용
+        event_start = max(event["start"], start)
+        event_end = min(event["end"], end)
+
+        if event_end <= event_start:
+            continue
+
+        calendar_events.append({
+            "id": event["id"],
+            "title": event["title"],
+            "start_time": event_start.strftime("%H:%M"),
+            "end_time": event_end.strftime("%H:%M"),
+            "is_fixed": True,
+            "is_adjustable": False,
+            "has_attendees": False,
+            "location": "",
+            "walking_level": "low",
+        })
+
+    return calendar_events
+
+
+def get_trip_calendar_events(trip: dict) -> list[dict]:
+    """여행 기간에 해당하는 Google Calendar 일정을 조회한다."""
+    start_date = date.fromisoformat(trip["start_date"])
+    end_date = date.fromisoformat(trip["end_date"])
+
+    start = datetime.combine(
+        start_date, datetime.min.time(), tzinfo=KST
+    )
+    end = datetime.combine(
+        end_date + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=KST
+    )
+
+    return get_events_between(start, end)
+
+
+def add_trip_event(trip_id: str, title: str, start: str, end: str):
+    """Google Calendar에 여행 ID가 연결된 일정을 등록한다."""
+    if not trip_id.strip():
+        raise ValueError("여행 ID가 필요합니다.")
+
+    start_dt = parse_local_datetime(start)
+    end_dt = parse_local_datetime(end)
+
+    if end_dt <= start_dt:
+        raise ValueError("종료 시간은 시작 시간보다 늦어야 합니다.")
+
+    service = get_calendar_service()
+
+    event_body = {
+        "summary": title,
+        "start": {
+            "dateTime": start_dt.isoformat(),
+            "timeZone": "Asia/Seoul",
+        },
+        "end": {
+            "dateTime": end_dt.isoformat(),
+            "timeZone": "Asia/Seoul",
+        },
+        "extendedProperties": {
+            "private": {
+                "trip_id": trip_id,
+            }
+        },
+    }
+
+    return service.events().insert(
+        calendarId="primary",
+        body=event_body,
+    ).execute()
+
+
+def get_trip_events(trip: dict) -> list[dict]:
+    """Google Calendar에서 특정 여행에 연결된 일정만 조회한다."""
+    start_date = date.fromisoformat(trip["start_date"])
+    end_date = date.fromisoformat(trip["end_date"])
+
+    start = datetime.combine(
+        start_date, datetime.min.time(), tzinfo=KST
+    )
+    end = datetime.combine(
+        end_date + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=KST
+    )
+
+    service = get_calendar_service()
+    events = []
+    page_token = None
+
+    while True:
+        response = service.events().list(
+            calendarId="primary",
+            timeMin=start.isoformat(),
+            timeMax=end.isoformat(),
+            privateExtendedProperty=f"trip_id={trip['trip_id']}",
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=250,
+            pageToken=page_token,
+        ).execute()
+
+        for event in response.get("items", []):
+            if event.get("status") == "cancelled":
+                continue
+
+            start_data = event["start"]
+            end_data = event["end"]
+
+            if "dateTime" in start_data:
+                event_start = datetime.fromisoformat(
+                    start_data["dateTime"].replace("Z", "+00:00")
+                ).astimezone(KST)
+
+                event_end = datetime.fromisoformat(
+                    end_data["dateTime"].replace("Z", "+00:00")
+                ).astimezone(KST)
+            else:
+                event_start = datetime.combine(
+                    date.fromisoformat(start_data["date"]),
+                    datetime.min.time(),
+                    tzinfo=KST,
+                )
+                event_end = datetime.combine(
+                    date.fromisoformat(end_data["date"]),
+                    datetime.min.time(),
+                    tzinfo=KST,
+                )
+
+            events.append({
+                "id": event["id"],
+                "title": event.get("summary", "제목 없음"),
+                "start": event_start,
+                "end": event_end,
+            })
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return events
+
+
+def get_trip_schedule(trip: dict) -> list[dict]:
+    """여행 일정을 날짜별로 정리한다."""
+    trip_start = date.fromisoformat(trip["start_date"])
+    trip_end = date.fromisoformat(trip["end_date"])
+
+    raw_events = get_trip_events(trip)
+    schedule = []
+
+    current_date = trip_start
+
+    while current_date <= trip_end:
+        day_start = datetime.combine(
+            current_date, datetime.min.time(), tzinfo=KST
+        )
+        day_end = day_start + timedelta(days=1)
+
+        day_events = []
+
+        for event in raw_events:
+            # 해당 날짜와 겹치는 일정만 포함
+            event_start = max(event["start"], day_start)
+            event_end = min(event["end"], day_end)
+
+            if event_end <= event_start:
+                continue
+
+            day_events.append({
+                "id": event["id"],
+                "title": event["title"],
+                "start_time": event_start.strftime("%H:%M"),
+                "end_time": event_end.strftime("%H:%M"),
+                "walking_level": "unknown",
+            })
+
+        schedule.append({
+            "date": current_date.isoformat(),
+            "events": day_events,
+        })
+
+        current_date += timedelta(days=1)
+
+    return schedule

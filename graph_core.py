@@ -8,6 +8,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from state import AgentState
 from config import llm_small, llm_large
 from planner_nodes import condition_analyzer_node, planner_agent_node
+from trip_service import get_active_trip
+from calendar_service import get_today_calendar_events, get_trip_schedule
+from condition_service import get_biometrics_context
+from weather_service import get_trip_weather
+from task_service import get_tasks_context
 
 # ==========================================
 # [0] Supervisor 구조화 출력 스키마 및 프롬프트
@@ -176,9 +181,41 @@ def build_dummy_context(today=None) -> dict:
         ],
     }
 
+
+
 def context_collector_node(state: AgentState):
-    print("[맥락 수집] 외부 API 병렬 호출 중... (현재 더미 데이터)")
-    return {"context_data": build_dummy_context()}
+    """여행, 캘린더, 수면·피로도 정보를 수집한다."""
+    print("[맥락 수집] 사용자 데이터 조회 중...")
+
+    context = build_dummy_context()
+
+    # 1. SQLite에서 여행 정보 조회
+    trip = get_active_trip()
+    context["trip"] = trip
+
+    # 2. Google Calendar에서 오늘 일정 조회
+    context["calendar_events"] = get_today_calendar_events()
+
+    # 3. 여행에 연결된 일정 조회
+    if trip is not None:
+        context["trip_schedule"] = get_trip_schedule(trip)
+    else:
+        context["trip_schedule"] = []
+
+    # 4. SQLite에서 최근 수면·피로도 기록 조회
+    context["biometrics"] = get_biometrics_context(days=7)
+
+    # 5. 여행 목적지의 실제 날씨 조회
+    if trip is not None:
+        context["weather"] = get_trip_weather(trip)
+    else:
+        context["weather"] = []
+
+    # 6. SQLite에서 미완료 할 일 조회
+    context["tasks"] = get_tasks_context()
+
+    return {"context_data": context}
+
 
 def purchase_advisor_node(state: AgentState):
     """[임시 더미] TODO(서경): 실제 구매 어드바이저로 교체. 출력 형식은 state.PurchaseProposal"""
