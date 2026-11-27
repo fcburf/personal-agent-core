@@ -1,13 +1,7 @@
 import sqlite3
-from pathlib import Path
 from datetime import datetime
 
-BASE_DIR = Path(__file__).resolve().parent
-DB_FILE = BASE_DIR / "tasks.db"
-
-
-def get_connection():
-    return sqlite3.connect(DB_FILE)
+from db_init import get_connection
 
 
 def init_tasks_db():
@@ -244,9 +238,6 @@ def get_paused_task_schedules():
             ORDER BY p.paused_at DESC
         """).fetchall()
         return [dict(row) for row in rows]
-
-
-from db_init import get_connection
 
 
 def get_tasks_context() -> list[dict]:
