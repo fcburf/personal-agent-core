@@ -32,6 +32,7 @@ class PlannerProposal(TypedDict, total=False):
     """아침 브리핑 — 일정 플래너(채린)"""
     date: str
     user_requested_rest: bool
+    briefing_note: str                      # 날씨·컨디션·도보량 요약 (도보 '많음'이면 파스 안내 포함) — 화면 표시용
     condition_score: Dict[str, Any]
     schedule_blocks: List[Dict[str, Any]]   # id, start_time, end_time, duration_minutes, title, task_type, status, location
     changed_items: List[Dict[str, Any]]     # id, title, change_type, before, after, reason
@@ -42,9 +43,11 @@ class PlannerProposal(TypedDict, total=False):
 class TripPlanProposal(TypedDict, total=False):
     """여행 전 일정 정리 — 일정 플래너(채린) 여행 전체 모드"""
     trip_id: str
-    days: List[Dict[str, Any]]              # [{date, schedule_blocks: [{id, title, start_time, end_time, location, walking_level}]}]
-    heavy_walking_dates: List[str]          # 도보 '많음' 날짜 → 구매 수량 판단 근거
-    unresolvable_warnings: List[str]
+    destination: str
+    days: List[Dict[str, Any]]              # [{date, day_label, walking_level, schedule_blocks: [{id, title, start_time, end_time, duration_minutes, task_type, location, walking_level, note}]}]
+    heavy_walking_dates: List[str]          # 도보 '많음' 날짜 → 구매 수량 판단 근거 (플래너 코드가 days에서 다시 계산)
+    unresolvable_warnings: List[str]        # 일정에 못 넣은 wishlist 장소와 이유 (T2)
+    remaining_violations: List[str]
 
 class PurchaseProposal(TypedDict, total=False):
     """구매 상담 — 구매 어드바이저(서경)"""

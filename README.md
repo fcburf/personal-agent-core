@@ -151,7 +151,7 @@ class RejectedEntry(TypedDict, total=False):
 | `today` | 지인 | 기준 날짜 `YYYY-MM-DD` |
 | `trip` | 지인 | **여행 정보** (여행 전 입력 폼 → `trips` 테이블): `{trip_id, destination, start_date, end_date, accommodation, budget, currency, wishlist: {places, foods, activities}}` |
 | `active_hours` | 지인 | 활동 시간대 `"08:00-23:00"` (D4) |
-| `calendar_events` | 지인 | **오늘 일정만** `[{id, title, start_time, end_time(HH:MM), is_fixed, is_adjustable, has_attendees, location, walking_level}]` — `walking_level`: 많음/보통/적음. 고정 일정은 기본 `is_adjustable=False`, 장소 없으면 `""` ⚠️ 여러 날 일정을 넣으면 플래너가 '고정 일정 삭제(A3-1)'로 오인 |
+| `calendar_events` | 지인 | **오늘 일정만** `[{id, title, start_time, end_time(HH:MM), is_fixed, is_adjustable, has_attendees, location, walking_level}]` — `walking_level`: 많음/보통/적음/unknown (일정에 저장된 값 우선, 없으면 제목·장소 키워드로 추정 — `calendar_service.estimate_walking_level`). 고정 일정은 기본 `is_adjustable=False`, 장소 없으면 `""` ⚠️ 여러 날 일정을 넣으면 플래너가 '고정 일정 삭제(A3-1)'로 오인 |
 | `trip_schedule` | 지인 | **여행 전체 날짜별 일정** `[{date, events: [{id, title, start_time, end_time, walking_level}]}]` — 구매 상담이 '남은 일정'을 읽는 곳 |
 | `tasks` | 지인 | `[{id, title, deadline(YYYY-MM-DD HH:MM), is_collaborative, estimated_minutes}]` |
 | `biometrics` | 지인 | `{recent: [최근 3일 {date, sleep_type(score/manual/all_nighter), sleep_score, sleep_hours, fatigue_level(1~5)}], steps_today}` |
@@ -164,8 +164,8 @@ Critic·승인·`rejected_history`가 시나리오와 상관없이 같은 칸을
 
 | 시나리오 | 작성 | 타입 | 주요 필드 |
 |---|---|---|---|
-| 여행 전 일정 정리 | 일정 플래너 (채린) | `TripPlanProposal` | `trip_id`, `days: [{date, schedule_blocks(+walking_level)}]`, `heavy_walking_dates`, `unresolvable_warnings` |
-| 아침 브리핑 | 일정 플래너 (채린) | `PlannerProposal` | `schedule_blocks`, `changed_items`, `postponed_tasks`, `unresolvable_warnings`, `remaining_violations`, `user_requested_rest` |
+| 여행 전 일정 정리 | 일정 플래너 (채린) | `TripPlanProposal` | `trip_id`, `destination`, `days: [{date, day_label, walking_level, schedule_blocks(+walking_level, note)}]`, `heavy_walking_dates` (코드가 days에서 다시 계산), `unresolvable_warnings`, `remaining_violations` |
+| 아침 브리핑 | 일정 플래너 (채린) | `PlannerProposal` | `briefing_note` (날씨·컨디션·도보량 요약, 도보 '많음'이면 파스 안내 — **화면에 표시**), `schedule_blocks`, `changed_items`, `postponed_tasks`, `unresolvable_warnings`, `remaining_violations`, `user_requested_rest` |
 | 구매 상담 | 구매 어드바이저 (서경) | `PurchaseProposal` | `decision`(recommend/hold), `item`, `category`, **`recommended{name, price, currency, quantity}`**, **`quantity_basis`**(수량 근거), **`purchase_context`**(구매하려던 이유·상황), `criteria`, `candidates`, `impulse_signals`, `evidence`(검색 출처 포함), `revisit_at` |
 | 저녁 회고 | 회상 인터뷰 (서경) | `RecallResult` | `purchase_id`, `recall_stage`(first_run/1_week/1_month), `questions`, `satisfaction`, `reason_tags`, `comment`, `skipped` |
 
