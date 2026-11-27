@@ -221,6 +221,16 @@ def get_events_between(start, end):
                 "title": event.get("summary", "제목 없음"),
                 "start": event_start,
                 "end": event_end,
+                "location": event.get("location", ""),
+                "walking_level": (
+                    event.get("extendedProperties", {})
+                    .get("private", {})
+                    .get("walking_level")
+                    or estimate_walking_level(
+                        event.get("summary", "제목 없음"),
+                        event.get("location", ""),
+    )
+),
             })
 
         page_token = response.get("nextPageToken")
@@ -230,6 +240,39 @@ def get_events_between(start, end):
 
     return events
 
+def estimate_walking_level(title: str, location: str = "") -> str:
+    """일정 제목과 장소를 바탕으로 예상 도보량을 분류한다.
+
+    지도 기반 이동 거리 계산 전 사용하는 간단한 규칙 기반 추정이다.
+    """
+    text = f"{title} {location}".lower()
+
+    high_keywords = (
+        "등산", "트레킹", "하이킹", "산책로",
+        "테마파크", "놀이공원", "유니버설 스튜디오",
+        "디즈니랜드", "도보 투어",
+    )
+
+    low_keywords = (
+        "카페", "휴식", "호텔", "숙소",
+        "식사", "점심", "저녁", "마사지",
+    )
+
+    medium_keywords = (
+        "쇼핑", "시장", "관광", "박물관",
+        "미술관", "거리", "탐방",
+    )
+
+    if any(keyword in text for keyword in high_keywords):
+        return "많음"
+
+    if any(keyword in text for keyword in low_keywords):
+        return "적음"
+
+    if any(keyword in text for keyword in medium_keywords):
+        return "보통"
+
+    return "unknown"
 
 def get_today_calendar_events(today=None):
     """오늘의 Google Calendar 일정을 에이전트 형식으로 변환한다."""
@@ -260,8 +303,8 @@ def get_today_calendar_events(today=None):
             "is_fixed": True,
             "is_adjustable": False,
             "has_attendees": False,
-            "location": "",
-            "walking_level": "low",
+            "location": event.get("location", ""),
+            "walking_level": event.get("walking_level", "unknown"),
         })
 
     return calendar_events
@@ -284,10 +327,20 @@ def get_trip_calendar_events(trip: dict) -> list[dict]:
     return get_events_between(start, end)
 
 
-def add_trip_event(trip_id: str, title: str, start: str, end: str):
-    """Google Calendar에 여행 ID가 연결된 일정을 등록한다."""
+
+def add_trip_event(
+    trip_id: str,
+    title: str,
+    start: str,
+    end: str,
+    walking_level: str,
+):
+    """Google Calendar에 여행 ID와 도보량이 연결된 일정을 등록한다."""
     if not trip_id.strip():
         raise ValueError("여행 ID가 필요합니다.")
+
+    if walking_level not in ("많음", "보통", "적음"):
+        raise ValueError("도보량은 '많음', '보통', '적음' 중 하나여야 합니다.")
 
     start_dt = parse_local_datetime(start)
     end_dt = parse_local_datetime(end)
@@ -310,6 +363,7 @@ def add_trip_event(trip_id: str, title: str, start: str, end: str):
         "extendedProperties": {
             "private": {
                 "trip_id": trip_id,
+                "walking_level": walking_level,
             }
         },
     }
@@ -318,6 +372,7 @@ def add_trip_event(trip_id: str, title: str, start: str, end: str):
         calendarId="primary",
         body=event_body,
     ).execute()
+
 
 
 def get_trip_events(trip: dict) -> list[dict]:
@@ -382,6 +437,15 @@ def get_trip_events(trip: dict) -> list[dict]:
                 "title": event.get("summary", "제목 없음"),
                 "start": event_start,
                 "end": event_end,
+                "walking_level": (
+                    event.get("extendedProperties", {})
+                    .get("private", {})
+                    .get("walking_level")
+                    or estimate_walking_level(
+                        event.get("summary", "제목 없음"),
+                        event.get("location", ""),
+    )
+),
             })
 
         page_token = response.get("nextPageToken")
@@ -422,7 +486,7 @@ def get_trip_schedule(trip: dict) -> list[dict]:
                 "title": event["title"],
                 "start_time": event_start.strftime("%H:%M"),
                 "end_time": event_end.strftime("%H:%M"),
-                "walking_level": "unknown",
+                "walking_level": event.get("walking_level", "unknown"),
             })
 
         schedule.append({

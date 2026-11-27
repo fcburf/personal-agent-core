@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from categories import DEFAULT_CATEGORY, PURCHASE_CATEGORIES, URGENT_NEED_EXAMPLES, normalize_category
 from config import llm_large, llm_small
 from state import get_last_user_message
+from contextlib import closing
 
 # ---------------------------------------------------------------------
 # 설정값 (Critic 조건표와 같은 기준. 바꿀 때는 원형 님 critic_rules.py와 함께)
@@ -571,7 +572,7 @@ def save_purchase_decision(state: Dict[str, Any], user_response: str = "approved
     decision = state.get("user_decision") or {}
     trip = (state.get("context_data") or {}).get("trip") or {}
     init_db()
-    with get_connection() as conn:
+    with closing(get_connection()) as conn, conn:
         cur = conn.execute(
             """INSERT INTO purchase_decisions
                (trip_id, item, category, decision, recommended, user_response,

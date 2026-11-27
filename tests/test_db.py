@@ -25,17 +25,41 @@ def test_all_tables_created_and_rerun_safe():
 
 def test_jiin_functions_work_on_unified_db():
     path = _fresh_db()
-    old_t, old_c, old_p = task_service.DB_FILE, condition_service.DB_FILE, db_init.DB_PATH
-    task_service.DB_FILE = condition_service.DB_FILE = db_init.DB_PATH = path   # 공용 DB 경로를 임시 파일로
+
+    old_c = condition_service.DB_FILE
+    old_p = db_init.DB_PATH
+
+    condition_service.DB_FILE = path
+    db_init.DB_PATH = path
+
     try:
-        tid = task_service.add_task("여행 짐 싸기", "2026-11-28", "2026-11-29 22:00", 60)
+        tid = task_service.add_task(
+            "여행 짐 싸기",
+            "2026-11-28",
+            "2026-11-29 22:00",
+            60,
+        )
+
         t = task_service.get_task(tid)
-        assert t["title"] == "여행 짐 싸기" and t["is_collaborative"] == 0
-        condition_service.save_condition(fatigue_level=4, sleep_type="manual",
-                                         bedtime="02:00", wake_time="06:00", record_date="2026-11-30")
-        assert condition_service.get_condition("2026-11-30")["sleep_minutes"] == 240
+        assert t["title"] == "여행 짐 싸기"
+        assert t["is_collaborative"] == 0
+
+        condition_service.save_condition(
+            fatigue_level=4,
+            sleep_type="manual",
+            bedtime="02:00",
+            wake_time="06:00",
+            record_date="2026-11-30",
+        )
+
+        assert (
+            condition_service.get_condition("2026-11-30")["sleep_minutes"]
+            == 240
+        )
+
     finally:
-        task_service.DB_FILE, condition_service.DB_FILE, db_init.DB_PATH = old_t, old_c, old_p
+        condition_service.DB_FILE = old_c
+        db_init.DB_PATH = old_p
 
 
 def test_trip_and_purchase_rejection_rows():
