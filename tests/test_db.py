@@ -25,8 +25,8 @@ def test_all_tables_created_and_rerun_safe():
 
 def test_jiin_functions_work_on_unified_db():
     path = _fresh_db()
-    old_t, old_c = task_service.DB_FILE, condition_service.DB_FILE
-    task_service.DB_FILE = condition_service.DB_FILE = path         # DB 경로만 바꾸면 기존 함수 그대로 동작
+    old_t, old_c, old_p = task_service.DB_FILE, condition_service.DB_FILE, db_init.DB_PATH
+    task_service.DB_FILE = condition_service.DB_FILE = db_init.DB_PATH = path   # 공용 DB 경로를 임시 파일로
     try:
         tid = task_service.add_task("여행 짐 싸기", "2026-11-28", "2026-11-29 22:00", 60)
         t = task_service.get_task(tid)
@@ -35,7 +35,7 @@ def test_jiin_functions_work_on_unified_db():
                                          bedtime="02:00", wake_time="06:00", record_date="2026-11-30")
         assert condition_service.get_condition("2026-11-30")["sleep_minutes"] == 240
     finally:
-        task_service.DB_FILE, condition_service.DB_FILE = old_t, old_c
+        task_service.DB_FILE, condition_service.DB_FILE, db_init.DB_PATH = old_t, old_c, old_p
 
 
 def test_trip_and_purchase_rejection_rows():

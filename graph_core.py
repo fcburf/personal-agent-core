@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from typing import Literal
 from pydantic import BaseModel, Field
@@ -13,6 +14,8 @@ from calendar_service import get_today_calendar_events, get_trip_schedule
 from condition_service import get_biometrics_context
 from weather_service import get_trip_weather
 from task_service import get_tasks_context
+from purchase_nodes import purchase_advisor_node  # 구매 어드바이저 (서경)
+from db_init import init_db
 
 # ==========================================
 # [0] Supervisor 구조화 출력 스키마 및 프롬프트
@@ -183,60 +186,60 @@ def build_dummy_context(today=None) -> dict:
 
 
 
-def context_collector_node(state: AgentState):
-    """여행, 캘린더, 수면·피로도 정보를 수집한다."""
-    print("[맥락 수집] 사용자 데이터 조회 중...")
+def _collect(name: str, fn, fallback, errors: list, sources: dict):
+    """데이터 소스 하나를 읽고, 실패하면 예시 데이터로 대체 + 경고 기록 (그래프가 멈추지 않게)"""
+    try:
+        value = fn()
+        sources[name] = "live"
+        return value
+    except Exception as e:  # noqa: BLE001  — 시연 중 소스 하나 실패로 전체가 멈추지 않도록
+        sources[name] = "dummy(fallback)"
+        errors.append(f"{name}: {type(e).__name__}: {e}"[:200])
+        print(f" -> [맥락 수집 경고] {name} 조회 실패 → 예시 데이터로 대체 ({type(e).__name__})")
+        return fallback
 
+
+def context_collector_node(state: AgentState):
+    """여행, 캘린더, 수면·피로도, 날씨, 할 일을 수집한다 (지인 님 서비스 함수 사용).
+    - CONTEXT_SOURCE=dummy 이면 예시 데이터만 사용 (테스트·오프라인 시연)
+    - 소스별로 실패해도 그 항목만 예시 데이터로 대체하고 계속 진행
+    - context_data["data_sources"]: 항목별 live / dummy(fallback) — 화면·Critic이 실제 데이터인지 확인용
+    - context_data["source_errors"]: 실패 원인 (디버깅용)"""
+    print("[맥락 수집] 사용자 데이터 조회 중...")
     context = build_dummy_context()
 
-    # 1. SQLite에서 여행 정보 조회
-    trip = get_active_trip()
+    if os.getenv("CONTEXT_SOURCE", "live").lower() == "dummy":
+        context["data_sources"] = {k: "dummy" for k in
+                                   ("trip", "calendar_events", "trip_schedule", "biometrics", "weather", "tasks")}
+        context["source_errors"] = []
+        return {"context_data": context}
+
+    errors, sources = [], {}
+    _collect("db_init", init_db, None, errors, sources)           # 테이블이 없으면 생성 (여러 번 실행해도 안전)
+
+    # 1. 여행 정보 (SQLite trips) — 진행 중인 여행이 없으면 None이 정상 값
+    trip = _collect("trip", get_active_trip, context["trip"], errors, sources)
     context["trip"] = trip
+    # 2. 오늘 일정 (Google Calendar) — 오늘만
+    context["calendar_events"] = _collect("calendar_events", get_today_calendar_events,
+                                          context["calendar_events"], errors, sources)
+    # 3. 여행 전체 날짜별 일정 (구매 상담이 남은 일정을 읽는 곳)
+    context["trip_schedule"] = (_collect("trip_schedule", lambda: get_trip_schedule(trip),
+                                         context["trip_schedule"], errors, sources) if trip else [])
+    # 4. 최근 수면·피로도 (SQLite daily_conditions)
+    context["biometrics"] = _collect("biometrics", lambda: get_biometrics_context(days=7),
+                                     context["biometrics"], errors, sources)
+    # 5. 여행지 날씨 (Weather API)
+    context["weather"] = (_collect("weather", lambda: get_trip_weather(trip),
+                                   context["weather"], errors, sources) if trip else [])
+    # 6. 미완료 할 일 (SQLite tasks)
+    context["tasks"] = _collect("tasks", get_tasks_context, context["tasks"], errors, sources)
 
-    # 2. Google Calendar에서 오늘 일정 조회
-    context["calendar_events"] = get_today_calendar_events()
-
-    # 3. 여행에 연결된 일정 조회
-    if trip is not None:
-        context["trip_schedule"] = get_trip_schedule(trip)
-    else:
-        context["trip_schedule"] = []
-
-    # 4. SQLite에서 최근 수면·피로도 기록 조회
-    context["biometrics"] = get_biometrics_context(days=7)
-
-    # 5. 여행 목적지의 실제 날씨 조회
-    if trip is not None:
-        context["weather"] = get_trip_weather(trip)
-    else:
-        context["weather"] = []
-
-    # 6. SQLite에서 미완료 할 일 조회
-    context["tasks"] = get_tasks_context()
-
+    sources.pop("db_init", None)
+    context["data_sources"] = sources
+    context["source_errors"] = errors
     return {"context_data": context}
 
-
-def purchase_advisor_node(state: AgentState):
-    """[임시 더미] TODO(서경): 실제 구매 어드바이저로 교체. 출력 형식은 state.PurchaseProposal"""
-    print("[구매 어드바이저] 구매 추천/보류 초안 작성 중... (현재 더미)")
-    # 오사카 데모 예시: 남은 일정 중 도보 '많음'인 날 수로 수량 판단, 여행 예산 내에서 저렴한 쪽
-    return {"draft_proposal": {
-        "decision": "recommend",
-        "item": "다리 피로 회복 패치",
-        "category": "건강·위생",
-        "purchase_context": "유니버설 스튜디오에서 약 2만 보를 걸어 다리 통증",
-        "criteria": ["남은 일정 도보량", "여행 예산"],
-        "candidates": [
-            {"id": "A", "name": "휴족시간 18매입", "price": 932, "currency": "JPY"},
-            {"id": "B", "name": "샤론파스 40매입", "price": 1180, "currency": "JPY"},
-        ],
-        "recommended": {"name": "휴족시간 18매입", "price": 932, "currency": "JPY", "quantity": 1},
-        "quantity_basis": "남은 일정 중 도보 '많음' 1일 + 오늘 밤 → 18매 1상자로 충분",
-        "impulse_signals": [],
-        "evidence": ["trip_schedule: 내일 쿠로몬 시장(도보 많음)", "trip.budget 60,000엔 중 12,800엔 사용"],
-        "revisit_at": None,
-    }}
 
 def recall_interview_node(state: AgentState):
     """[임시 더미] TODO(서경): 실제 회상 인터뷰로 교체. 출력 형식은 state.RecallResult"""
