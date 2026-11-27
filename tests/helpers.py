@@ -27,6 +27,18 @@ def fake_planner_module():
     return m
 
 
+def fake_purchase_module():
+    """서경 님 purchase_nodes 대신 쓰는 가짜 모듈 (Gemini 호출 없음). 형식은 state.PurchaseProposal"""
+    m = types.ModuleType("purchase_nodes")
+    m.purchase_advisor_node = lambda s: {"draft_proposal": {
+        "decision": "recommend", "item": "다리 피로 회복 패치", "category": "건강·위생",
+        "purchase_context": "유니버설 스튜디오에서 약 2만 보를 걸어 다리 통증",
+        "recommended": {"name": "휴족시간 18매입", "price": 932, "currency": "JPY", "quantity": 1},
+        "quantity_basis": "남은 일정 중 도보 '많음' 2일 × 하루 2매 = 4매 → 18매입 1개",
+        "criteria": [], "candidates": [], "impulse_signals": [], "evidence": [], "revisit_at": None}}
+    return m
+
+
 def load_graph(critic_always_severity=None, name="graph_under_test"):
     """graph_core를 새로 불러와서 반환 (가짜 플래너 사용).
     critic_always_severity="critical"/"high"면 임시 Critic이 항상 그 심각도로 반려하도록 바꾼다."""
@@ -37,13 +49,19 @@ def load_graph(critic_always_severity=None, name="graph_under_test"):
         src = src.replace('"severity": "high",', f'"severity": "{critic_always_severity}",', 1)
 
     saved = sys.modules.get("planner_nodes")
+    saved_purchase = sys.modules.get("purchase_nodes")
     sys.modules["planner_nodes"] = fake_planner_module()
+    sys.modules["purchase_nodes"] = fake_purchase_module()
     try:
         mod = types.ModuleType(name)
         mod.__file__ = str(src_path)
         with contextlib.redirect_stdout(io.StringIO()):
             exec(compile(src, str(src_path), "exec"), mod.__dict__)
     finally:
+        if saved_purchase is not None:
+            sys.modules["purchase_nodes"] = saved_purchase
+        else:
+            sys.modules.pop("purchase_nodes", None)
         if saved is not None:
             sys.modules["planner_nodes"] = saved
         else:
