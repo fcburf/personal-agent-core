@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # 테스트는 구글 로그인·실제 DB 없이 예시 데이터로만 실행 (graph_core.context_collector_node 참고)
 os.environ["CONTEXT_SOURCE"] = "dummy"
+os.environ["CRITIC_MODE"] = "dummy"   # 경로 테스트는 임시 Critic 사용 (실제 Critic 검사는 tests/test_critic.py)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

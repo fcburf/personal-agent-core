@@ -15,6 +15,7 @@ from condition_service import get_biometrics_context
 from weather_service import get_trip_weather
 from task_service import get_tasks_context
 from purchase_nodes import purchase_advisor_node  # 구매 어드바이저 (서경)
+from critic_nodes import run_critic, build_message  # Critic·커뮤니케이터 문구 (원형)
 from db_init import init_db
 
 # ==========================================
@@ -274,13 +275,18 @@ def decide_critic_verdict(severity: str, rework_count: int) -> tuple[bool, str]:
     return False, ("keep_original" if severity == "critical" else "warn")
 
 def critic_node(state: AgentState):
-    print("[Critic 검증] llm_large로 과잉 개인화 및 논리 검사 중...")
+    """Critic (원형): ① 코드 검사(critic_rules.py) + ② LLM 해석 검사 → critic_nodes.run_critic.
+    판정(pass/rework/warn/keep_original)은 아래 decide_critic_verdict가 심각도로 정한다.
+    CRITIC_MODE=dummy 이면 임시 Critic(첫 검사 high 반려 → 이후 통과) — tests/helpers.py가 경로 테스트에 사용."""
+    print("[Critic 검증] 조건표 기준 코드 검사 + LLM 해석 검사 중...")
     prev_count = state.get("rework_count", 0)
 
-    # TODO(원형): 대형 LLM 구조화 출력으로 교체. 입력: draft_proposal, context_data,
-    #             condition_score, rejected_history(D6 검사용). 출력: violated_rules, severity, feedback, target_agent
-    # 더미 로직: 첫 검사는 high로 반려, 이후 통과
-    if prev_count < 1:
+    if os.getenv("CRITIC_MODE", "real").lower() != "dummy":
+        critic_res = run_critic(state)
+        rejected_now = SEVERITY_RANK.get(critic_res["severity"], 0) >= SEVERITY_RANK["high"]
+        critic_res["target_agent"] = AGENT_BY_REQUEST.get(state.get("request_type")) if rejected_now else None
+    # 임시 Critic (테스트용): 첫 검사는 high로 반려, 이후 통과
+    elif prev_count < 1:
         critic_res = {
             "violated_rules": ["A1_마감_누락"],
             "severity": "high",
@@ -330,24 +336,11 @@ def communicator_node(state: AgentState):
     return result
 
 def _communicator_message(state: AgentState):
-    """TODO(원형): 안내 문구 작성. critic_verdict 값에 따라 문구 분기.
-    - "pass"          : 결론 → 이유 → 대안 (critic_result.violated_rules의 medium·low 경고 표시)
-    - "warn"          : 위와 같되 경고 표시를 붙여 전달
-    - "keep_original" : 제안을 내보내지 않고 "원래 일정 유지" + 충돌 이유 안내 (승인 단계 없이 종료)
-    - request_type == "general" : 일반 대화 응답 (승인 단계 없이 종료)
-    - 거절 후(user_decision.status == "rejected") : "원래 일정 유지 + 무엇을 바꾸고 싶은지" 질문 (승인 단계 없이 종료)
-      (커뮤니케이터는 draft_proposal을 바꾸지 못하므로, 거절된 계획을 다시 승인받지 않는다)
-    """
-    verdict = state.get("critic_verdict")
-    print(f"[커뮤니케이터] 결론 -> 이유 -> 대안 순서로 메시지 포매팅 중... (verdict={verdict})")
-    if state.get("request_type") == "general":
-        return {"final_response": "안녕하세요! 일정 브리핑, 구매 상담, 저녁 회고를 도와드릴 수 있어요."}
-    if is_after_rejection(state):
-        return {"final_response": "알겠습니다. 오늘은 원래 일정을 그대로 유지할게요. 바꾸고 싶은 부분이 있으면 말씀해 주세요."}
-    if verdict == "keep_original":
-        return {"final_response": "검토 결과 마감·고정 일정을 지킬 수 있는 안전한 재배치안을 찾지 못해 원래 일정을 유지합니다."}
-    prefix = "⚠️ [확인 필요] " if verdict == "warn" else ""
-    return {"final_response": prefix + "제안: 회의를 오전으로 옮기세요. (이유: 오후 집중력 저하 예상)"}
+    """안내 문구 (원형, critic_nodes.build_message). critic_verdict·시나리오별로 결론 → 이유 → 대안.
+    - "pass" / "warn"(⚠️ 경고 붙임) / "keep_original"(제안을 내보내지 않음) / general / 거절 후 — 문구는 시나리오별로 다름
+    (커뮤니케이터는 draft_proposal을 바꾸지 못하므로, 거절된 계획을 다시 승인받지 않는다)"""
+    print(f"[커뮤니케이터] 결론 -> 이유 -> 대안 순서로 메시지 포매팅 중... (verdict={state.get('critic_verdict')})")
+    return {"final_response": build_message(state, after_rejection=is_after_rejection(state))}
 
 def user_approval_node(state: AgentState):
     """interrupt_before로 멈췄다가, UI가 user_decision을 넣고 재개하면 실행되는 노드.
